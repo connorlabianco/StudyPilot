@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>StudyPilot Support</title>
+<link rel="icon" href="assets/icon.png">
+<style>
+  :root { --bg: #ffffff; --ink: #1f2328; --muted: #59636e; --line: #d8dee4; --accent: #2f6fed; --soft: #f3f6fd; }
+  @media (prefers-color-scheme: dark) { :root { --bg: #111418; --ink: #e8eaed; --muted: #a2a9b3; --line: #2c3138; --accent: #7aa7ff; --soft: #1a2130; } }
+  body { margin: 0; background: var(--bg); color: var(--ink); font: 16px/1.65 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  main { max-width: 760px; margin: 0 auto; padding: 40px 16px 64px; }
+  a { color: var(--accent); }
+  h1 { font-size: 1.9em; margin: 0 0 8px; }
+  h2 { font-size: 1.2em; margin: 32px 0 8px; padding-top: 16px; border-top: 1px solid var(--line); }
+  .box { background: var(--soft); border-radius: 12px; padding: 16px 18px; margin: 16px 0; }
+  details { border-bottom: 1px solid var(--line); padding: 10px 0; }
+  summary { cursor: pointer; font-weight: 700; }
+  details p { color: var(--muted); margin: 8px 0 4px; }
+</style>
+</head>
+<body>
+<main>
+<p><a href="./">&larr; StudyPilot home</a></p>
+<h1>StudyPilot Support</h1>
+<div class="box">
+  <b>Found a bug or have an idea?</b> <a href="https://github.com/YOUR-GITHUB-USERNAME/studypilot/issues/new">Open an issue on GitHub</a>, or email [CONTACT EMAIL].
+  Please include your school's Canvas address (like yourschool.instructure.com), what you clicked, and what happened.
+  Never include passwords, access tokens or screenshots of your grades.
+</div>
+
+<h2>Common questions</h2>
+<details><summary>StudyPilot doesn't find my Canvas.</summary>
+<p>Open Canvas in a tab and log in; StudyPilot connects automatically. If your school's Canvas address doesn't end in instructure.com (for example canvas.yourschool.edu), choose "Type your Canvas address instead" and allow access when Chrome asks.</p></details>
+<details><summary>Something I turned in still shows as due.</summary>
+<p>Canvas doesn't see work turned in on Gradescope or on paper until it's graded. Connect Gradescope (Settings › Connections) so StudyPilot can check, or click the check mark next to the item to mark it done.</p></details>
+<details><summary>How do quizzes work without an API key?</summary>
+<p>StudyPilot prepares a request from your lecture and opens your AI with it filled in. You press Send, then copy the reply; StudyPilot notices it and imports the quiz. You take the quiz inside StudyPilot.</p></details>
+<details><summary>My AI's reply didn't import.</summary>
+<p>Make sure you copied the whole reply, including the code block. If your AI added extra text, ask it to "reply with only the studypilot-quiz block", then copy again. You can also paste it in Practice › "Add questions you got elsewhere".</p></details>
+<details><summary>Search doesn't find things inside my slides.</summary>
+<p>Search looks inside lectures StudyPilot has read. In the search window, click "Read the other … module items", or turn on background prep in Settings › Data &amp; privacy.</p></details>
+<details><summary>Can StudyPilot do my homework or answer quiz questions?</summary>
+<p>No. It never opens quizzes or tests, and it's built to help you learn the material, not to complete graded work.</p></details>
+<details><summary>How do I delete my data?</summary>
+<p>Settings › Data &amp; privacy › Clear all StudyPilot data, or remove the extension. If you used Google sign-in, see the <a href="privacy.html">privacy policy</a> for removing the synced copy.</p></details>
+</main>
+</body>
+</html>

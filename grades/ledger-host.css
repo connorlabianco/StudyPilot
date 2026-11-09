@@ -1,0 +1,20 @@
+/* Fit the ledger into StudyPilot's narrow side panel without touching grade-ledger.css. */
+html, body { margin: 0; background: transparent; }
+body { font-size: 14px; }
+.grade-ledger { background: transparent; }
+.grade-ledger .wrap { padding: 0 !important; max-width: none !important; gap: 12px !important; }
+.grade-ledger header { display: none; }
+.grade-ledger .sheet { padding: 14px !important; }
+.grade-ledger .tablewrap { overflow-x: auto; }
+/* Narrow panel: fixed columns so name, grade, weight and remove all fit */
+html.compact .grade-ledger { font-size: 14px; }
+html.compact .grade-ledger table { table-layout: fixed; width: 100%; min-width: 0; }
+html.compact .grade-ledger th:nth-child(1) { width: 40%; }
+html.compact .grade-ledger th:nth-child(2), html.compact .grade-ledger th:nth-child(3) { width: 25%; }
+html.compact .grade-ledger th:nth-child(4) { width: 10%; }
+html.compact .grade-ledger th, html.compact .grade-ledger td { padding-left: 3px; padding-right: 3px; }
+html.compact .grade-ledger th { font-size: .62rem; letter-spacing: .04em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+html.compact .grade-ledger td input, html.compact .grade-ledger td select { padding: 5px 6px; }
+html.compact .grade-ledger .x { padding: 4px 2px; }
+html.compact .grade-ledger tfoot td { white-space: normal; font-size: .9em; }
+html.compact .grade-ledger .row { flex-wrap: wrap; }

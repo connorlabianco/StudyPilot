@@ -1,0 +1,117 @@
+{
+  "manifest_version": 3,
+  "name": "StudyPilot – study planner for Canvas LMS",
+  "version": "5.6.7",
+  "description": "A friendlier Canvas: course pages, in-app practice quizzes, grade calculator, plans and study packs for any AI.",
+  "permissions": [
+    "storage",
+    "sidePanel",
+    "alarms",
+    "activeTab",
+    "scripting",
+    "clipboardWrite",
+    "downloads",
+    "identity",
+    "offscreen",
+    "unlimitedStorage",
+    "clipboardRead"
+  ],
+  "host_permissions": [
+    "https://*.instructure.com/*",
+    "https://*.instructuremedia.com/*",
+    "https://*.canvas-user-content.com/*",
+    "https://www.googleapis.com/*",
+    "https://oauth2.googleapis.com/*"
+  ],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "side_panel": {
+    "default_path": "sidepanel/sidepanel.html"
+  },
+  "action": {
+    "default_title": "StudyPilot",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "32": "icons/icon32.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "32": "icons/icon32.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://*.instructure.com/*"
+      ],
+      "exclude_matches": [
+        "https://*.instructure.com/*/quizzes/*",
+        "https://*.instructure.com/*/external_tools/*"
+      ],
+      "js": [
+        "content/look.js"
+      ],
+      "run_at": "document_start"
+    },
+    {
+      "matches": [
+        "https://*.instructure.com/*"
+      ],
+      "exclude_matches": [
+        "https://*.instructure.com/*/quizzes/*",
+        "https://*.instructure.com/*/external_tools/*"
+      ],
+      "js": [
+        "content/enhance.js"
+      ],
+      "css": [
+        "content/enhance.css"
+      ],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "https://*.instructure.com/*",
+        "https://*.instructuremedia.com/*",
+        "https://*.canvas-user-content.com/*"
+      ],
+      "exclude_matches": [
+        "https://*.instructure.com/*/quizzes/*"
+      ],
+      "js": [
+        "content/speed.js"
+      ],
+      "all_frames": true,
+      "run_at": "document_idle"
+    }
+  ],
+  "oauth2": {
+    "client_id": "194823149354-u3l6sdp1endi0v081v4g4o1eloelorlc.apps.googleusercontent.com",
+    "scopes": [
+      "https://www.googleapis.com/auth/drive.appdata"
+    ]
+  },
+  "optional_host_permissions": [
+    "https://*/*",
+    "http://*/*"
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "lib/look.js"
+      ],
+      "matches": [
+        "https://*.instructure.com/*"
+      ]
+    }
+  ],
+  "optional_permissions": [
+    "notifications"
+  ]
+}

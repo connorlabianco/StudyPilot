@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Grade Ledger</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap">
+<link rel="stylesheet" href="grade-ledger.css">
+<link rel="stylesheet" href="ledger-host.css">
+</head>
+<body>
+<div class="grade-ledger" id="grade-ledger">
+<div class="wrap">
+  <header>
+    <h1>Grade Ledger</h1>
+    <p class="lede">Weighted grade calculator with percentage, letter and points grades. Save any calculation and reopen it later.</p>
+  </header>
+
+  <section class="sheet" aria-labelledby="calc-h">
+    <div class="hdr">
+      <h2 id="gl-calc-h">Grade calculator</h2>
+      <div class="seg" role="group" aria-label="Grade type">
+        <button type="button" data-mode="percent" aria-pressed="true">Percentage</button>
+        <button type="button" data-mode="letter" aria-pressed="false">Letters</button>
+        <button type="button" data-mode="points" aria-pressed="false">Points</button>
+      </div>
+    </div>
+
+    <div class="tablewrap">
+      <table>
+        <thead><tr id="gl-thead-row"></tr></thead>
+        <tbody id="gl-rows"></tbody>
+        <tfoot><tr id="gl-totals"></tr></tfoot>
+      </table>
+    </div>
+    <div class="row">
+      <button type="button" class="btn" id="gl-add-row">+ Add row</button>
+      <span class="note" id="gl-mode-note"></span>
+    </div>
+
+    <div class="row">
+      <label class="inline" for="gl-target">Target average
+        <input type="number" id="gl-target" class="small" step="any" value="90"> %
+      </label>
+      <span class="note">Give a row a weight but no score to mark it as still to come.</span>
+    </div>
+    <div class="row">
+      <label class="inline" for="gl-decimals">Decimal places
+        <select id="gl-decimals" class="small"><option>0</option><option>1</option><option selected>2</option></select>
+      </label>
+      <button type="button" class="btn primary" id="gl-calc">Calculate</button>
+      <button type="button" class="btn" id="gl-reset">Reset</button>
+    </div>
+
+    <div class="results" aria-live="polite">
+      <div class="res main"><div class="label">Current grade (scored work)</div><div class="big" id="gl-r-avg">—</div></div>
+      <div class="res"><div class="label">Needed on what's left</div><div class="big" id="gl-r-need">—</div><div class="note" id="gl-r-need-note"></div></div>
+      <div class="res"><div class="label">Calculation</div><div class="work" id="gl-r-work">—</div></div>
+    </div>
+
+    <div class="remain" id="gl-remain" aria-live="polite">
+      <div class="hdr"><div class="label">Remaining weight</div><span class="note" id="gl-rem-sum"></span></div>
+      <div class="bar" id="gl-bar" aria-hidden="true"></div>
+      <ul class="legend" id="gl-legend"></ul>
+      <div class="range">
+        <div><div class="label">Worst case</div><div class="mid" id="gl-rng-min">—</div><div class="note">0% on everything left</div></div>
+        <div><div class="label">Best case</div><div class="mid" id="gl-rng-max">—</div><div class="note">100% on everything left</div></div>
+        <div><label class="label" for="gl-assume">If I score</label>
+          <div class="inline"><input type="number" id="gl-assume" class="small" step="any" value="85"><span>% on the rest</span></div>
+          <div class="note">Projected: <b class="mono" id="gl-proj">—</b></div></div>
+      </div>
+    </div>
+
+    <div class="row" style="border-top:1px solid var(--rule);padding-top:14px">
+      <label for="gl-save-name" class="label" style="flex-basis:100%">Save this result</label>
+      <input id="gl-save-name" type="text" placeholder="e.g. Biology 101, fall term" style="flex:1 1 220px;width:auto">
+      <button type="button" class="btn primary" id="gl-save">Save result</button>
+    </div>
+    <div class="toast" id="gl-toast" role="status"></div>
+  </section>
+
+  <section class="sheet" aria-labelledby="saved-h">
+    <div class="hdr"><h2 id="gl-saved-h">Saved results</h2><div class="inline"><span class="note" id="gl-store-note">Loading…</span><button type="button" class="btn" id="gl-export">Export</button><button type="button" class="btn" id="gl-import">Import</button><input type="file" id="gl-import-file" accept="application/json,.json" hidden></div></div>
+    <ul class="saved" id="gl-saved"></ul>
+  </section>
+
+  <section class="sheet" aria-labelledby="final-h">
+    <h2 id="gl-final-h">Final exam grade needed</h2>
+    <div class="row">
+      <label class="inline" for="gl-f-cur">Current grade <input type="number" id="gl-f-cur" class="small" step="any" value="84"> %</label>
+      <label class="inline" for="gl-f-tgt">Target grade <input type="number" id="gl-f-tgt" class="small" step="any" value="90"> %</label>
+      <label class="inline" for="gl-f-w">Final exam weight <input type="number" id="gl-f-w" class="small" step="any" value="25"> %</label>
+    </div>
+    <div class="row">
+      <button type="button" class="btn primary" id="gl-f-calc">Calculate</button>
+      <button type="button" class="btn" id="gl-f-reset">Reset</button>
+    </div>
+    <div class="res main"><div class="label">Final exam grade needed</div><div class="big" id="gl-f-out">—</div><div class="work" id="gl-f-work"></div></div>
+  </section>
+
+  <section class="sheet" aria-labelledby="how-h">
+    <h2 id="gl-how-h">How it's calculated</h2>
+    <p class="note" style="margin:0;max-width:65ch">Weighted grade = (w₁×g₁ + w₂×g₂ + …) ÷ (w₁ + w₂ + …). When weights add up to 100%, that's just the sum of each weight times its grade. Rows with no weight count equally. In Points mode each row's grade is earned ÷ possible, weighted by points possible. Letters use the scale A+ 97–100, A 93–96, A− 90–92, B+ 87–89, B 83–86, B− 80–82, C+ 77–79, C 73–76, C− 70–72, D+ 67–69, D 63–66, D− 60–62, F below 60; a letter entry counts as the middle of its band (F counts as 50).</p>
+  </section>
+</div>
+</div>
+<!-- StudyPilot: storage adapter must load before grade-ledger.js (see README). -->
+<script src="gl-storage.js"></script>
+<script src="grade-ledger.js"></script>
+<script src="ledger-host.js"></script>
+</body>
+</html>

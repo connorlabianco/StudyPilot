@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>StudyPilot</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible:wght@400;700&family=Nunito:wght@500;700;800&family=IBM+Plex+Sans:wght@400;600;700&display=swap" />
+  <link rel="stylesheet" href="../vendor/katex/katex.min.css" />
+  <link rel="stylesheet" href="sidepanel.css" />
+  <script src="../vendor/katex/katex.min.js"></script>
+</head>
+<body>
+  <div id="app">
+    <header class="top">
+      <div class="brand"><img class="logo-img" src="../icons/icon48.png" alt="" width="30" height="30"> StudyPilot</div>
+      <div class="top-actions">
+        <button id="searchBtn" class="ghost" aria-label="Search everything" title="Search everything (/)"><span aria-hidden="true" data-icon="search"></span></button>
+        <button id="focusBtn" class="ghost" aria-label="Focus timer" title="Focus timer"><span aria-hidden="true" data-icon="timer"></span></button>
+        <button id="syncBtn" class="ghost" aria-label="Refresh Canvas data" title="Refresh Canvas data"><span aria-hidden="true" data-icon="refresh"></span></button>
+      </div>
+    </header>
+
+    <nav class="tabs" role="tablist" aria-label="StudyPilot sections">
+      <button role="tab" id="tab-today" aria-controls="today" aria-selected="true"><span aria-hidden="true" data-icon="home"></span>Today</button>
+      <button role="tab" id="tab-courses" aria-controls="courses" aria-selected="false" tabindex="-1"><span aria-hidden="true" data-icon="school"></span>Courses</button>
+      <button role="tab" id="tab-practice" aria-controls="practice" aria-selected="false" tabindex="-1"><span aria-hidden="true" data-icon="quiz"></span>Practice</button>
+      <button role="tab" id="tab-settings" aria-controls="settings" aria-selected="false" tabindex="-1"><span aria-hidden="true" data-icon="settings"></span>Settings</button>
+    </nav>
+
+    <div id="focusbar" class="focusbar" role="timer" aria-label="Focus timer" hidden></div>
+
+    <div id="progress" class="progress hidden" role="status" aria-live="polite">
+      <div class="bar"><div class="fill"></div></div>
+      <div class="label"></div>
+    </div>
+
+    <main>
+      <div id="banner" aria-live="polite"></div>
+      <section id="today" role="tabpanel" aria-labelledby="tab-today"></section>
+      <section id="courses" role="tabpanel" aria-labelledby="tab-courses" hidden></section>
+      <section id="practice" role="tabpanel" aria-labelledby="tab-practice" hidden></section>
+      <section id="settings" role="tabpanel" aria-labelledby="tab-settings" hidden></section>
+    </main>
+
+    <div id="toast" class="toast" role="status" aria-live="polite"></div>
+  </div>
+  <div id="runner" class="runner" role="dialog" aria-modal="true" aria-label="Practice" hidden></div>
+  <dialog id="sheet" class="sheet" aria-label="Actions"></dialog>
+  <script src="main.js" type="module"></script>
+</body>
+</html>
