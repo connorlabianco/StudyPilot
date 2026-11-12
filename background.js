@@ -6,8 +6,10 @@ import { isLocked } from "./lib/safety.js";
 import { openWork } from "./lib/packs.js";
 import * as gcal from "./lib/gcal.js";
 import { parsePlan } from "./lib/planparse.js";
-import * as hub from "./lib/jupyterhub.js";
-import { isGitPullLink, nbToMarkdown } from "./lib/jupyter.js";
+import * as hubApi from "./lib/jupyterhub.js";
+import { isGitPullLink, nbToMarkdown, hubFromLink, knownHubs, hubForCourse, nbCellsText, nbProblemText, notebookData, summarizeData, notebookDirs, prettyNotebook } from "./lib/jupyter.js";
+import { timeSnippets, weekEvents, mondayOf, addDays, ymd, emptyWeek } from "./lib/schedule.js";
+import { planDays, planInfo } from "./lib/planner.js";
 import { download, waitForDownload } from "./lib/dl.js";
 import { icsBusy } from "./lib/ical.js";
 import { parseSyllabusWeights } from "./lib/grades.js";
@@ -42,9 +44,12 @@ export const DEFAULT_SETTINGS = {
   // Accessibility
   textSize: "normal", highContrast: false, reduceMotion: false, readableFont: false,
   // JupyterHub
-  jupyterUrl: "", jupyterPullLinks: [], jupyterPullFirst: true,
+  // jupyterHubs: course id → that course's hub address ("none" = the course doesn't use Jupyter).
+  // jupyterUrl is the older single-hub setting, still honored for courses that already had folders picked.
+  jupyterUrl: "", jupyterHubs: {}, jupyterPullLinks: [], jupyterPullFirst: true,
   // Lecture library: courses synced automatically, and courses whose originals are also mirrored to Downloads
   libraryCourses: [], libraryMirror: [],
+  moduleLayout: {}, masteryLevel: {}, // per course: Lectures-tab arrangement; what "mastered" means
   // Calendar feed (private iCal link) for busy times without Google sign-in; courses hidden from StudyPilot
   icalUrl: "", hiddenCourses: [],
   // Canvas look (see lib/look.js); empty = defaults
@@ -62,6 +67,25 @@ export const DEFAULT_SETTINGS = {
 async function settings() {
   const { settings } = await chrome.storage.local.get("settings");
   return { ...DEFAULT_SETTINGS, ...(settings || {}) };
+}
+
+// JupyterHub: only hubs the student connected (for some course) may be opened.
+async function checkHub(hub) {
+  const s = await settings();
+  if (!hub || !knownHubs(s).includes(hub)) throw new Error("Connect this course's JupyterHub first (on the course's Files page).");
+  return hub;
+}
+// The student's own server on that hub, from the last check (checks again if needed).
+async function serverFor(hub) {
+  const { jupyterState = {} } = await chrome.storage.local.get("jupyterState");
+  let st = jupyterState[hub];
+  if (!st?.serverBase) {
+    st = await hubApi.status(hub);
+    if (!st.serverBase) throw new Error(st.state === "login" ? `Log in to ${new URL(hub).host} first.` : "Start your Jupyter server first.");
+    jupyterState[hub] = { ...st, checked_at: Date.now() };
+    await chrome.storage.local.set({ jupyterState });
+  }
+  return st.serverBase;
 }
 
 async function client() {
@@ -138,6 +162,14 @@ async function gsLinkFor(courseId, gsCourses) {
   const course = snapshot?.courses.find((x) => x.id === courseId);
   return course ? gs.matchCourse(course, gsCourses) : null;
 }
+// Jupyter notebook JSON → readable cells
+function notebookText(raw) {
+  try {
+    const nb = JSON.parse(raw);
+    return (nb.cells || []).map((c) => `${c.cell_type === "code" ? "[code]" : "[text]"}\n${[].concat(c.source || []).join("")}`).join("\n\n");
+  } catch { return raw; }
+}
+
 // ---------- search index (built from what's already stored, plus module titles) ----------
 let searchCache = null;
 const moduleCache = {};
@@ -297,6 +329,70 @@ async function readFileRemote(file) {
 const fileMeta = (f) => ({ id: f.id, name: f.display_name, url: f.url, size: f.size, type: f["content-type"] || "" });
 const docKey = (courseId, l) => l.doc_key || (l.type === "Page" ? `${courseId}:P:${l.page_url}` : l.type === "Video" ? `${courseId}:V:${l.video_id}` : `${courseId}:F:${l.file_id}`);
 
+
+// ---------- JupyterHub notebooks as lectures ----------
+const pathKey = (p) => { let h = 2166136261; for (let i = 0; i < p.length; i++) { h ^= p.charCodeAt(i); h = Math.imul(h, 16777619); } return (h >>> 0).toString(36); };
+/** The course's lecture notebooks (folders sorted as lecture material), from the last look at its hub. */
+async function hubLectures(courseId) {
+  const s = await settings();
+  const hub = hubForCourse(s, courseId);
+  const folders = (s.jupyterCourseFolders || {})[courseId] || [];
+  if (!hub || hub === "none" || !folders.length) return [];
+  const { jupyterScans = {} } = await chrome.storage.local.get("jupyterScans");
+  const files = jupyterScans[hub]?.files || [];
+  const dirs = notebookDirs(files, folders, (s.jupyterKinds || {})[courseId] || {});
+  const out = [];
+  let i = 0;
+  for (const [dir, g] of Object.entries(dirs)) {
+    if (g.kind !== "lecture") continue;
+    for (const f of g.notebooks.sort((a, b) => a.path.localeCompare(b.path, undefined, { numeric: true }))) {
+      const key = `${courseId}:J:${pathKey(f.path)}`;
+      out.push({ key, doc_key: key, course_id: courseId, title: prettyNotebook(f.path), module: "From JupyterHub", module_id: "jhub", module_index: 100000,
+        position: i++, type: "Notebook", is_lecture: true, hub, path: f.path, date: f.last_modified || null, url: `${hub}/hub/user-redirect/lab/tree/${f.path.split("/").map(encodeURIComponent).join("/")}` });
+    }
+  }
+  return out;
+}
+/** Homework notebooks (folders sorted as assignments): problem text and data descriptions, for the study plan. */
+async function hubHomework(courseId) {
+  const s = await settings();
+  const hub = hubForCourse(s, courseId);
+  const folders = (s.jupyterCourseFolders || {})[courseId] || [];
+  if (!hub || hub === "none" || !folders.length) return { hub: null, notebooks: [], files: [] };
+  const { jupyterScans = {} } = await chrome.storage.local.get("jupyterScans");
+  const files = jupyterScans[hub]?.files || [];
+  const dirs = notebookDirs(files, folders, (s.jupyterKinds || {})[courseId] || {});
+  return { hub, files, notebooks: Object.values(dirs).filter((g) => g.kind === "assignment").flatMap((g) => g.notebooks) };
+}
+// Reads a lecture notebook: its cells (numbered like slides), plots as attachable figures, and a short description
+// of each data file it uses (columns, types, first rows), read with the student's own hub login.
+async function ensureNotebook(courseId, l, existing) {
+  const hub = await checkHub(l.hub);
+  if (existing?.version === (l.date || "") && existing.text) return existing;
+  const server = await serverFor(hub);
+  const [r] = await hubApi.readFiles(hub, server, [l.path]);
+  if (!r || r.skipped || !r.notebook) throw new Error(`Couldn't read ${l.path} on JupyterHub${r?.skipped ? ` (${r.skipped})` : ""}.`);
+  const figures = [];
+  const base = l.path.split("/").pop().replace(/\.ipynb$/i, "");
+  let figBytes = 0;
+  const figure = (cell, k, mime, data) => {
+    if (figures.length >= 12 || figBytes + data.length > 6e6) return null;
+    const name = `${base} - cell ${cell}${k > 1 ? `.${k}` : ""}.${mime === "image/png" ? "png" : "jpg"}`;
+    figures.push({ name, url: `data:${mime};base64,${data.replace(/\s+/g, "")}`, size: Math.round(data.length * 0.75) });
+    figBytes += data.length;
+    return name;
+  };
+  const { text, cells } = nbCellsText(r.content, { figure });
+  const { jupyterScans = {} } = await chrome.storage.local.get("jupyterScans");
+  const data = notebookData(r.content, l.path, jupyterScans[hub]?.files || []);
+  const heads = await hubApi.readHeads(hub, server, data.filter((f) => /\.(csv|tsv|txt|json|geojson)$/i.test(f.path)).map((f) => f.path)).catch(() => ({}));
+  const dataText = data.map((f) => summarizeData(f, heads[f.path] || "")).join("\n\n");
+  const doc = { key: docKey(courseId, l), course_id: courseId, kind: "notebook", title: l.title, module: l.module, version: l.date || r.last_modified || "",
+    text: text + (dataText ? `\n\n--- Data files used ---\n${dataText}` : ""), cells, figures, url: l.url, hub, path: l.path, visual: figures.length > 0 };
+  await lib.putDoc(doc);
+  return doc;
+}
+
 // Transcripts for videos inside a Canvas page: Canvas's own media captions, and Panopto embeds (if connected).
 async function pageVideoText(c, body) {
   const parts = [];
@@ -323,6 +419,7 @@ async function ensureLecture(c, courseId, l) {
   const key = docKey(courseId, l);
   const existing = await lib.getDoc(key);
 
+  if (l.type === "Notebook") return ensureNotebook(courseId, l, existing);
   if (l.type === "Video") {
     if (existing?.text) return existing;
     const caps = await vids.panoptoCaptions(l.host, [l.video_id]);
@@ -481,6 +578,45 @@ const actions = {
     if (snapshot) { gs.applyMarked(snapshot, doneItems); await chrome.storage.local.set({ snapshot }); await updateBadge(snapshot); }
     return true;
   },
+
+  // ---------- the actual material behind each assignment (for plans and AI help) ----------
+  // For each assignment: the files linked in its instructions (homework PDFs, lab files, data sets), read into text.
+  // Read-only, skips locked files, caps sizes so a request stays a sensible length.
+  async ASSIGNMENT_MATERIALS({ items = [], perFile = 9000, total = 60000 } = {}) {
+    const c = await client();
+    const out = {};
+    let used = 0;
+    for (const { courseId, id } of items.slice(0, 12)) {
+      const a = await c.optional(`/courses/${courseId}/assignments/${id}`, {}, { all: false }).catch(() => null);
+      if (!a || a.locked_for_user || a.is_quiz_assignment || (a.submission_types || []).includes("online_quiz")) continue; // never quizzes or locked work
+      const html = a.description || "";
+      const ids = [...new Set([...html.matchAll(/\/files\/(\d+)/g)].map((m) => Number(m[1])))].slice(0, 6);
+      const files = [];
+      for (const fid of ids) {
+        const f = (await c.optional(`/courses/${courseId}/files/${fid}`, {}, { all: false }).catch(() => null)) || (await c.file(fid).catch(() => null));
+        if (!f || f.locked_for_user) { files.push({ name: f?.display_name || `file ${fid}`, skipped: f?.locked_for_user ? "locked" : "not available" }); continue; }
+        const meta = fileMeta(f);
+        let text = "", note = "";
+        if (used < total) {
+          try {
+            const r = await readFileRemote(meta);
+            text = r.text || "";
+            if (/\.ipynb$/i.test(meta.name)) text = notebookText(text);
+            if (/\.(csv|tsv)$/i.test(meta.name)) { const lines = text.split("\n"); text = lines.slice(0, 16).join("\n") + (lines.length > 16 ? `\n… (${lines.length - 1} rows in total)` : ""); }
+            if (!text.trim() && r.visual) note = "handwritten or image-only; attached as a file instead";
+          } catch (e) { note = e.message; }
+        }
+        text = text.replace(/\n{3,}/g, "\n\n").trim().slice(0, Math.min(perFile, Math.max(0, total - used)));
+        used += text.length;
+        files.push({ name: meta.name, url: meta.url, type: meta.type, size: meta.size, text, note });
+      }
+      out[`${courseId}:${id}`] = { files };
+    }
+    return out;
+  },
+
+  // Re-check Gradescope right now (for plans), so turned-in work isn't planned again.
+  async GS_RECHECK() { await chrome.storage.local.set({ gsCheckAt: 0 }); await checkTurnedIn().catch(() => {}); return (await chrome.storage.local.get("snapshot")).snapshot; },
 
   // ---------- search across everything ----------
   async SEARCH({ q, courseId = null, limit = 40, fresh = false }) {
@@ -923,6 +1059,90 @@ const actions = {
       return exams[courseId];
     } finally { await progress(null); }
   },
+  // Study plan: homework notebooks on the course's hub that match these assignments by name ("hw03.ipynb" ↔
+  // "Homework 3"): their problem text (never the student's code or outputs) and a description of the data they use.
+  async JUPYTER_HOMEWORK({ courseId, assignments }) {
+    const { hub, files, notebooks } = await hubHomework(courseId);
+    if (!hub || !notebooks.length) return {};
+    const key = (s) => gs.workKey(s).replace(/\b0+(\d)/g, "$1");
+    const out = {}, want = [];
+    for (const a of assignments) {
+      const k = key(a.name);
+      // "Lab 02 (Gradescope)" and lab2-pandas.ipynb are the same thing: the kind and number decide.
+      const lead = (s) => (s.match(/^([a-z]+) (\d+)\b/) || [])[0] || s;
+      const nb = notebooks.find((f) => lead(key(prettyNotebook(f.path).replace(/^hw/i, "homework "))) === lead(k));
+      if (nb) { out[a.id] = { path: nb.path }; want.push(nb.path); }
+    }
+    if (!want.length) return {};
+    const server = await serverFor(await checkHub(hub)).catch(() => null);
+    if (!server) return {};
+    const read = await hubApi.readFiles(hub, server, [...new Set(want)]).catch(() => []);
+    for (const [id, v] of Object.entries(out)) {
+      const r = read.find((x) => x.path === v.path);
+      if (!r?.notebook) { delete out[id]; continue; }
+      const data = notebookData(r.content, v.path, files);
+      const heads = await hubApi.readHeads(hub, server, data.filter((f) => /\.(csv|tsv|txt|json|geojson)$/i.test(f.path)).map((f) => f.path)).catch(() => ({}));
+      out[id] = { name: v.path.split("/").pop(), text: nbProblemText(r.content) + (data.length ? `\n\nData it uses:\n${data.map((f) => summarizeData(f, heads[f.path] || "")).join("\n\n")}` : "") };
+    }
+    return out;
+  },
+  // My week: the parts of each course's syllabus and course pages that mention days, times and places
+  // (lectures, sections, labs, office hours). The student's AI turns them into class times.
+  async CLASS_TIME_SOURCES({ courseIds }) {
+    const c = await client();
+    const { snapshot } = await chrome.storage.local.get("snapshot");
+    const out = [];
+    for (const courseId of courseIds) {
+      const course = snapshot?.courses.find((x) => x.id === courseId);
+      await progress({ label: `Looking for class times in ${course?.code || "your courses"}` });
+      try {
+        let { syllabusText = {} } = await chrome.storage.local.get("syllabusText");
+        if (!syllabusText[courseId] || Date.now() - syllabusText[courseId].at > 7 * 864e5) {
+          await actions.EXAMS({ courseId, refresh: true }).catch(() => {});
+          ({ syllabusText = {} } = await chrome.storage.local.get("syllabusText"));
+        }
+        const texts = [syllabusText[courseId]?.text || ""];
+        // The course home page, and pages about sections, office hours or course info.
+        const front = await c.optional(`/courses/${courseId}/front_page`, {}, { all: false }).catch(() => null);
+        if (front?.body && !front.locked_for_user) texts.push(`## Course home page\n${stripHtml(front.body)}`);
+        for (const term of ["office", "section", "course info", "contact", "logistics"]) {
+          const list = await c.optional(`/courses/${courseId}/pages`, { search_term: term, per_page: 5 }).catch(() => null);
+          for (const p of (list || []).slice(0, 2)) {
+            const pg = await c.optional(`/courses/${courseId}/pages/${encodeURIComponent(p.url)}`, {}, { all: false }).catch(() => null);
+            if (pg?.body && !pg.locked_for_user) texts.push(`## ${pg.title}\n${stripHtml(pg.body)}`);
+          }
+        }
+        const text = [...new Set(texts.map((t) => timeSnippets(t, { max: 3500 })).filter(Boolean))].join("\n…\n").slice(0, 7000);
+        out.push({ id: courseId, name: course?.name || String(courseId), code: course?.code || "", text });
+      } catch (e) { out.push({ id: courseId, name: course?.name || String(courseId), code: course?.code || "", text: "", error: e.message }); }
+    }
+    await progress(null);
+    return out;
+  },
+  // Canvas calendar page: StudyPilot's study time, planned work and class times for the dates shown (drawn on the
+  // page only; nothing is written to Canvas).
+  async CAL_OVERLAY({ from, to }) {
+    const s = await settings();
+    return { on: s.calendarOverlay !== false, events: await weekItems(from, to) };
+  },
+  // Keep My week in Google Calendar: class times and planned study sittings (or study time, without a plan),
+  // for the next two weeks. StudyPilot's own events only; replaced whenever the week or the plan changes.
+  async GCAL_PUSH_WEEK() {
+    const today = ymd(new Date()), to = ymd(addDays(new Date(), 14));
+    const items = await weekItems(today, to);
+    const hasPlan = items.some((e) => e.kind === "plan");
+    const now = Date.now();
+    const events = items.filter((e) => e.kind === "class" || e.kind === "plan" || (e.kind === "study" && !hasPlan))
+      .filter((e) => Date.parse(`${e.date}T${e.end}:00`) > now)
+      .map((e) => ({ summary: e.kind === "study" ? "Study time" : e.kind === "plan" ? `Study: ${e.title}` : e.title, location: e.sub || "",
+        start: `${e.date}T${e.start}:00`, end: `${e.date}T${e.end}:00`, colorId: e.kind === "class" ? "8" : "10", quiet: e.kind === "class",
+        description: e.kind === "class" ? "Class time from My week" : "From your StudyPilot study plan" }));
+    const n = await gcal.replaceEvents("week", events, Intl.DateTimeFormat().resolvedOptions().timeZone);
+    await chrome.storage.local.set({ gcalWeekAt: Date.now() });
+    return { count: n };
+  },
+  async GCAL_REMOVE_WEEK() { return { count: await gcal.removeEvents("week") }; },
+  async CAL_OVERLAY_SET({ on }) { const s = await settings(); await chrome.storage.local.set({ settings: { ...s, calendarOverlay: !!on, settingsUpdatedAt: Date.now() } }); return true; },
   // Check courses whose exam dates haven't been looked at for 3 days (a few at a time).
   async EXAMS_STALE() {
     const { exams = {}, snapshot } = await chrome.storage.local.get(["exams", "snapshot"]);
@@ -951,7 +1171,7 @@ const actions = {
     let st = refresh ? null : (await chrome.storage.session.get("gsStatus")).gsStatus;
     if (!st || Date.now() - st.at > 10 * 60e3) {
       st = { ...(await gs.status()), at: Date.now() };
-      if (st.state === "ok") await chrome.storage.session.set({ gsStatus: st });
+      if (st.state === "ok" && st.courses?.length) await chrome.storage.session.set({ gsStatus: st }); // never remember an empty list
     }
     if (st.state !== "ok") return { uses, state: st.state };
     const link = await gsLinkFor(courseId, st.courses);
@@ -1090,12 +1310,12 @@ const actions = {
     const list = await (await client()).lectures(courseId);
     const { seenLectures = [] } = await chrome.storage.local.get("seenLectures");
     const docs = Object.fromEntries((await lib.docsForCourse(courseId).catch(() => [])).map((d) => [d.key, d]));
-    return list.map((l) => {
+    return [...list, ...(await hubLectures(courseId))].map((l) => {
       const d = docs[l.doc_key];
       return {
         ...l, is_new: !seenLectures.includes(l.key),
         saved: !!d, visual: !!d?.visual, no_text: !!d?.analysis?.noTextPages?.length, scanned: !!d?.analysis?.scanned,
-        pages: d?.analysis?.pageCount || null, unit: d?.analysis?.unit || null,
+        pages: d?.analysis?.pageCount || d?.cells || null, unit: d?.analysis?.unit || (d?.cells ? "cell" : null),
       };
     });
   },
@@ -1126,58 +1346,67 @@ const actions = {
   },
 
   // ---------- JupyterHub ----------
-  async JUPYTER_STATUS() {
-    const s = await settings();
-    if (!s.jupyterUrl) return { state: "none" };
-    const st = await hub.status(s.jupyterUrl);
-    await chrome.storage.local.set({ jupyter: { ...st, checked_at: Date.now() } });
+  // Each course can have its own hub. Every call names the hub, and only hubs the student connected are ever opened.
+  async JUPYTER_STATUS({ hub }) {
+    hub = await checkHub(hub);
+    const st = await hubApi.status(hub);
+    const { jupyterState = {} } = await chrome.storage.local.get("jupyterState");
+    jupyterState[hub] = { ...st, checked_at: Date.now() };
+    await chrome.storage.local.set({ jupyterState });
     return st;
   },
-  async JUPYTER_LOGIN() { await hub.openLogin((await settings()).jupyterUrl); return true; },
-  async JUPYTER_START() {
+  async JUPYTER_LOGIN({ hub }) { await hubApi.openLogin(await checkHub(hub)); return true; },
+  async JUPYTER_START({ hub }) {
+    hub = await checkHub(hub);
     await progress({ label: "Starting your Jupyter server (can take a minute)…" });
-    try { return await hub.startServer((await settings()).jupyterUrl); } finally { await progress(null); }
+    try { return await hubApi.startServer(hub); } finally { await progress(null); }
   },
-  async JUPYTER_FIND_LINKS() {
+  // Which hub does this course use? Looks at the course's modules and assignment pages for Jupyter links (any site).
+  async JUPYTER_DETECT({ courseId }) {
+    const c = await client();
+    const links = await c.gitPullLinks(courseId, (u) => !!hubFromLink(u)).catch(() => []);
+    const count = new Map();
+    for (const l of links) { const h = hubFromLink(l.url); count.set(h, (count.get(h) || 0) + 1); }
+    return [...count].sort((a, b) => b[1] - a[1]).map(([hub, links]) => ({ hub, links }));
+  },
+  async JUPYTER_FIND_LINKS({ hub, courseId }) {
     const s = await settings();
-    const { snapshot } = await chrome.storage.local.get("snapshot");
-    const isMatch = (u) => isGitPullLink(u, s.jupyterUrl);
+    hub = await checkHub(hub);
+    const isMatch = (u) => isGitPullLink(u, hub);
     const out = [];
-    if (snapshot && s.canvasUrl) {
+    if (s.canvasUrl && courseId) {
       const c = await client();
-      for (const course of snapshot.courses) {
-        await progress({ label: `Looking for course links in ${course.code || course.name}`, done: out.length, total: snapshot.courses.length });
-        for (const l of await c.gitPullLinks(course.id, isMatch).catch(() => [])) out.push({ ...l, course: course.code || course.name });
-      }
+      for (const l of await c.gitPullLinks(courseId, isMatch).catch(() => [])) out.push(l);
     }
-    for (const url of s.jupyterPullLinks || []) if (isMatch(url) && !out.some((l) => l.url === url)) out.push({ url, title: "Added by you", course: "" });
-    await progress(null);
+    for (const url of s.jupyterPullLinks || []) if (isMatch(url) && !out.some((l) => l.url === url)) out.push({ url, title: "Added by you" });
     return out;
   },
-  async JUPYTER_PULL({ links }) {
-    const s = await settings();
-    const safe = links.filter((u) => isGitPullLink(u, s.jupyterUrl)); // only ever opens links on the student's own hub
+  async JUPYTER_PULL({ hub, links }) {
+    hub = await checkHub(hub);
+    const safe = links.filter((u) => isGitPullLink(u, hub)); // only ever opens links on that course's own hub
     try {
-      return await hub.pullLatest(s.jupyterUrl, safe, (i, n) => progress({ label: "Getting the latest course files", done: i, total: n }));
+      return await hubApi.pullLatest(hub, safe, (i, n) => progress({ label: "Getting the latest course files", done: i, total: n }));
     } finally { await progress(null); }
   },
-  async JUPYTER_SCAN() {
-    const s = await settings();
-    const { jupyter } = await chrome.storage.local.get("jupyter");
-    if (!jupyter?.serverBase) throw new Error("Check your Jupyter connection first.");
+  async JUPYTER_SCAN({ hub }) {
+    hub = await checkHub(hub);
+    const server = await serverFor(hub);
     await progress({ label: "Listing your Jupyter files…" });
     try {
-      const res = await hub.scan(s.jupyterUrl, jupyter.serverBase);
-      await chrome.storage.local.set({ jupyterScan: { ...res, at: Date.now() } });
-      return res;
+      const r = await hubApi.scan(hub, server);
+      // remembered so lecture notebooks can show up in the course's lecture list
+      const { jupyterScans = {} } = await chrome.storage.local.get("jupyterScans");
+      jupyterScans[hub] = { files: r.files, at: Date.now() };
+      await chrome.storage.local.set({ jupyterScans });
+      return r;
     } finally { await progress(null); }
   },
   // files: [{path, size, last_modified}] from the scan → one zip per top-level folder
-  async JUPYTER_DOWNLOAD({ files, onlyNew = true }) {
-    const s = await settings();
-    const { jupyter } = await chrome.storage.local.get("jupyter");
+  async JUPYTER_DOWNLOAD({ hub, files, onlyNew = true }) {
+    hub = await checkHub(hub);
+    const serverBase = await serverFor(hub);
     const idx = await zipIndex();
-    const key = (p) => `j:${jupyter.serverBase}:${p}`;
+    const key = (p) => `j:${serverBase}:${p}`;
     const version = (f) => `${f.last_modified || ""}|${f.size ?? ""}`;
     const todo = onlyNew ? files.filter((f) => idx[key(f.path)] !== version(f)) : files;
     const groups = new Map();
@@ -1190,11 +1419,11 @@ const actions = {
     let done = 0, failed = 0;
     try {
       for (const [top, list] of groups) {
-        const host = new URL(s.jupyterUrl).host.split(".")[0];
+        const host = new URL(hub).host.split(".")[0];
         const z = await buildZip(`Jupyter - ${host} - ${top} - ${today()}${onlyNew && list.length < files.length ? " (new & changed)" : ""}`, [], {
           label: `Zipping ${top}`,
           extra: async (id) => {
-            const r = await hub.streamFiles(s.jupyterUrl, jupyter.serverBase, list.map((f) => f.path), {
+            const r = await hubApi.streamFiles(hub, serverBase, list.map((f) => f.path), {
               addChunk: (p, b64) => zipCall("ZIP_CHUNK", { id, path: inner(p), b64 }),
               commit: (p) => zipCall("ZIP_COMMIT", { id, path: inner(p), date: list.find((f) => f.path === p)?.last_modified }),
               onProgress: (i, n) => progress({ label: `Zipping ${top}`, done: i, total: n }),
@@ -1213,15 +1442,16 @@ const actions = {
     return { done, skipped: files.length - todo.length, failed, zips };
   },
   // files: [{path, last_modified}]; with onlyNew, notebooks unchanged since they were last sent are skipped.
-  async JUPYTER_READ({ files, onlyNew = true }) {
-    const s = await settings();
-    const { jupyter, jupyterSent = {} } = await chrome.storage.local.get(["jupyter", "jupyterSent"]);
-    const key = (p) => `${jupyter.serverBase}:${p}`;
+  async JUPYTER_READ({ hub, files, onlyNew = true }) {
+    hub = await checkHub(hub);
+    const serverBase = await serverFor(hub);
+    const { jupyterSent = {} } = await chrome.storage.local.get("jupyterSent");
+    const key = (p) => `${serverBase}:${p}`;
     const todo = onlyNew ? files.filter((f) => jupyterSent[key(f.path)] !== (f.last_modified || "")) : files;
     if (!todo.length) return { docs: [], unchanged: files.length };
     await progress({ label: `Reading ${todo.length} files…` });
     try {
-      const raw = await hub.readFiles(s.jupyterUrl, jupyter.serverBase, todo.map((f) => f.path));
+      const raw = await hubApi.readFiles(hub, serverBase, todo.map((f) => f.path));
       // Plot outputs become attachable image files (capped so a bundle stays reasonable).
       let totalFigs = 0;
       const docs = raw.map((r) => {
@@ -1269,9 +1499,6 @@ const actions = {
     await chrome.storage.local.remove("gcalEmail");
     return { connected: false };
   },
-  async GCAL_BUSY() {
-    return gcal.busyTimes((await settings()).daysAhead);
-  },
   // Busy times from the student's private calendar link (.ics), for planning without Google sign-in.
   async CAL_FEED_BUSY({ url } = {}) {
     const s = await settings();
@@ -1308,7 +1535,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   // Must run synchronously inside the click's message handler to keep the user gesture.
   if (msg?.type === "OPEN_PANEL") {
     if (sender?.tab?.id) chrome.sidePanel.open({ tabId: sender.tab.id }).catch(() => {});
-    if (msg.payload?.lecture || msg.payload?.module) chrome.storage.session.set({ queuedLecture: { ...msg.payload, at: Date.now() } });
+    if (msg.payload?.lecture || msg.payload?.module || msg.payload?.action) chrome.storage.session.set({ queuedLecture: { ...msg.payload, at: Date.now() } });
     sendResponse({ ok: true });
     return false;
   }
@@ -1357,15 +1584,91 @@ chrome.runtime.onInstalled.addListener(() => syncSpeedScripts());
 // Sync every 30 minutes, and shortly after anything worth syncing changes on this computer.
 chrome.alarms.create("gsync", { periodInMinutes: 30 });
 let syncTimer = null;
+// Google Calendar: My week follows changes (a couple of minutes later, so a burst of edits is one update).
+let gcalWeekTimer = null;
+function gcalWeekSoon() {
+  clearTimeout(gcalWeekTimer);
+  gcalWeekTimer = setTimeout(async () => {
+    const s = await settings();
+    const { gcalOff } = await chrome.storage.local.get("gcalOff");
+    if (!s.gcalWeekSync || gcalOff || !(await gcal.isConnected())) return;
+    actions.GCAL_PUSH_WEEK().catch(() => {});
+  }, 120e3);
+}
 chrome.storage.local.onChanged.addListener((ch) => {
   if (ch.settings) {
     const o = ch.settings.oldValue || {}, n = ch.settings.newValue || {};
     if (o.videoHost !== n.videoHost || o.videoSpeedOn !== n.videoSpeedOn || o.videoSpeedMore !== n.videoSpeedMore || o.videoSpeedEverywhere !== n.videoSpeedEverywhere) syncSpeedScripts();
   }
-  if (!["settings", "ledger", "gl", "examEdits", "lectureTopics", "studyLog"].some((k) => k in ch)) return;
+  // Plan pieces without their own time get stamped when they change here (so the newest copy wins when syncing).
+  const stamp = gsync.STAMPED.filter((k) => k in ch);
+  if (stamp.length && !gsync.isApplying()) chrome.storage.local.get("syncStamps").then(({ syncStamps = {} }) => {
+    for (const k of stamp) syncStamps[k] = Date.now();
+    chrome.storage.local.set({ syncStamps });
+  });
+  if (["week", "plan", "planDay", "planDone"].some((k) => k in ch)) gcalWeekSoon();
+  if (!["settings", "ledger", "gl", "examEdits", "lectureTopics", "studyLog", "checklists", "itemStats", "week", ...gsync.PLAN_KEYS].some((k) => k in ch)) return;
   clearTimeout(syncTimer);
   syncTimer = setTimeout(() => gsync.syncNow().catch(() => {}), 20e3);
 });
+
+// My week items for a date range: class times, study time and the plan's sittings (for Canvas's calendar page
+// and Google Calendar).
+async function weekItems(from, to) {
+  const st = await chrome.storage.local.get(["week", "snapshot", "plan", "planDone", "planDay", "checklists", "itemStats"]);
+  const s = await settings();
+  const week = { ...emptyWeek(), ...(st.week || {}) };
+  const courses = (st.snapshot?.courses || []).filter((c) => !(s.hiddenCourses || []).includes(c.id));
+  const terms = Object.fromEntries(courses.map((c) => [c.id, { start: c.term_start ? ymd(new Date(c.term_start)) : null, end: c.term_end ? ymd(new Date(c.term_end)) : null }]));
+  const color = (id) => { const own = s.look?.courseColors?.[id]; return (own && own !== "none" ? own : null) || st.snapshot?.colors?.[id] || "#8a8a8a"; };
+  const name = (id) => { const c = courses.find((x) => String(x.id) === String(id)); return c ? c.code || c.name : ""; };
+  const out = [];
+  for (let m = mondayOf(new Date(`${from}T12:00:00`)); ymd(m) <= to; m = addDays(m, 7)) {
+    for (const e of weekEvents(week, m, { courses, terms })) {
+      if (e.date < from || e.date > to || e.type === "choose") continue;
+      if (e.type === "study") out.push({ date: e.date, start: e.start, end: e.end, kind: "study", title: "Study time" });
+      else out.push({ date: e.date, start: e.start, end: e.end, kind: e.meeting.kind === "office" ? "office" : "class", title: `${name(e.courseId)} ${e.meeting.label}`, sub: e.meeting.location || "", color: color(e.courseId) });
+    }
+  }
+  if (st.plan) {
+    const info = planInfo({ snapshot: st.snapshot, checklists: st.checklists, itemStats: st.itemStats, masteryLevel: s.masteryLevel || {} });
+    const days = planDays(st.plan, week, { today: ymd(new Date()), done: st.planDone || {}, info, day: st.planDay, courses, terms });
+    for (const c of [...days.today.map((x) => ({ ...x, date: ymd(new Date()) })), ...days.later])
+      if (c.date >= from && c.date <= to) out.push({ date: c.date, start: c.start, end: c.end, kind: "plan", title: c.title, done: !!c.done, color: color(c.ref.split(":")[1]) });
+  }
+  return out;
+}
+
+// New lectures join the "For your AI" list (courses where the student uses lecture mastery; same rules as the
+// panel: only lectures posted after they started, never ones they removed). Runs with the regular refresh.
+async function newLecturesToList(s) {
+  const { checklists = {}, aiQueue = [], aiQueueSkip = [], aiQueueChecked = 0, snapshot } = await chrome.storage.local.get(["checklists", "aiQueue", "aiQueueSkip", "aiQueueChecked", "snapshot"]);
+  if (Date.now() - aiQueueChecked < 3 * 3600e3) return;
+  await chrome.storage.local.set({ aiQueueChecked: Date.now() });
+  const queued = new Set(aiQueue.map((j) => `${j.kind}:${j.lecture?.key || ""}`));
+  const add = [];
+  for (const c of snapshot?.courses || []) {
+    if ((s.hiddenCourses || []).includes(c.id)) continue;
+    const set = (s.autoChecklist || {})[c.id];
+    const first = Object.values(checklists).filter((r) => String(r.courseId) === String(c.id)).map((r) => r.at || 0).sort((a, b) => a - b)[0];
+    const auto = set ? (set.on ? set : null) : first ? { since: new Date(first).toISOString() } : null;
+    if (!auto) continue;
+    const list = await actions.LECTURES({ courseId: c.id }).catch(() => []);
+    // Notebooks change date whenever they're edited, so a notebook is "new" only the first time it shows up.
+    const { nbSeen = {} } = await chrome.storage.local.get("nbSeen");
+    const nbs = list.filter((l) => l.type === "Notebook").map((l) => l.key);
+    const firstLook = !nbSeen[c.id];
+    const freshNb = new Set(firstLook ? [] : nbs.filter((k) => !nbSeen[c.id].includes(k)));
+    if (nbs.length) { nbSeen[c.id] = [...new Set([...(nbSeen[c.id] || []), ...nbs])].slice(-2000); await chrome.storage.local.set({ nbSeen }); }
+    for (const l of list) {
+      if (!l.is_lecture || !["File", "Page", "Notebook"].includes(l.type) || checklists[l.key] || aiQueueSkip.includes(l.key) || queued.has(`checklist:${l.key}`)) continue;
+      if (l.type === "Notebook") { if (!freshNb.has(l.key)) continue; }
+      else if (!l.date || l.date < auto.since) continue;
+      add.push({ kind: "checklist", courseId: c.id, course: c.code || c.name, lecture: l, id: `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`, at: Date.now() });
+    }
+  }
+  if (add.length) await chrome.storage.local.set({ aiQueue: [...aiQueue, ...add].slice(0, 60) });
+}
 
 chrome.alarms.onAlarm.addListener(async (a) => {
   if (a.name === "gsync") { gsync.syncNow().catch(() => {}); return; }
@@ -1395,6 +1698,8 @@ chrome.alarms.onAlarm.addListener(async (a) => {
     const stale = (snapshot?.courses || []).find((c) => !(s.hiddenCourses || []).includes(c.id) && Date.now() - (exams[c.id]?.at || 0) > 3 * 864e5);
     if (stale) await actions.EXAMS({ courseId: stale.id, refresh: true }).catch(() => {});
   }
+  await newLecturesToList(s).catch(() => {});
+  if (s.gcalWeekSync) { const { gcalWeekAt = 0 } = await chrome.storage.local.get("gcalWeekAt"); if (Date.now() - gcalWeekAt > 12 * 3600e3) gcalWeekSoon(); }
   if (s.libraryCourses.length) {
     const { libraryMeta = {} } = await chrome.storage.local.get("libraryMeta");
     const due = s.libraryCourses.filter((id) => Date.now() - (libraryMeta[id]?.at || 0) > 3 * 3600e3);
