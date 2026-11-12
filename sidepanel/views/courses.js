@@ -6,7 +6,7 @@ import { bank, openSheet, lectureScope, moduleScope, courseScope, scopeStats, at
 import { openWork, exportPack, projectModuleMd, PROJECT_HOWTO } from "../../lib/packs.js";
 import { ledgerFromCanvas } from "../../lib/grades.js";
 import { weightsPrompt, mistakesPrompt } from "../../lib/ai.js";
-import { groupByTopFolder, filesInGroups, NOTEBOOKISH } from "../../lib/jupyter.js";
+import { groupByTopFolder, filesInGroups, NOTEBOOKISH, normalizeHubUrl, hubForCourse, knownHubs, notebookDirs } from "../../lib/jupyter.js";
 import { isDue, allQuizzes, quizzesFor } from "../../lib/quiz.js";
 import { icon } from "../../lib/icons.js";
 
@@ -122,7 +122,9 @@ async function lectures(root, c) {
       const set = new Set(s.libraryCourses || []); want ? set.add(c.id) : set.delete(c.id);
       await saveSettings({ libraryCourses: [...set] });
       if (want) { toast("Reading lectures… you can keep using StudyPilot."); send("LIBRARY_SYNC", { courseIds: [c.id] }).then(() => { delete state.lectureCache[c.id]; rerender(); }).catch((err) => toast(err.message, { error: true })); }
-    })));
+    }),
+    masteryLevelPicker(c),
+    autoListToggle(c)));
   const offer = attachOfferCard();
   if (offer) root.append(offer);
 
@@ -149,13 +151,124 @@ async function lectures(root, c) {
   if (state.lectureFilter === "new") box.append(h("div", { class: "group-title" }, h("span", {}, `${shown.length} new`),
     act("Mark all seen", async () => { await send("MARK_SEEN", { keys: shown.map((l) => l.key) }); list.forEach((l) => (l.is_new = false)); rerender(); }, { cls: "btn small soft" })));
 
+  drawModules(box, c, list, shown, qs, quizzes);
+}
+
+// What "mastered" means for this course's lecture checklists.
+const LEVELS = {
+  quick: "Right once, without a hint or looking at the lecture. For lighter courses or a quick pass.",
+  solid: "Right without help on 2 different days, with 2 different questions. Good for most courses.",
+  deep: "Right without help on 3 different days, with 3 different questions, including one where you apply it. For your hardest courses.",
+};
+function masteryLevelPicker(c) {
+  const cur = (state.settings.masteryLevel || {})[c.id] || "solid";
+  return h("div", { class: "mastery-level" },
+    h("div", { class: "field", style: "margin:10px 0 4px" }, "In this course, “mastered” means"),
+    seg([["quick", "Quick"], ["solid", "Solid"], ["deep", "Deep"]], cur, async (v) => {
+      await saveSettings({ masteryLevel: { ...(state.settings.masteryLevel || {}), [c.id]: v } }); rerender();
+    }, "Mastered means"),
+    h("div", { class: "hint" }, LEVELS[cur]));
+}
+
+// New lectures in this course join the "For your AI" list (on once a checklist is made here).
+function autoListToggle(c) {
+  const box = h("div", {});
+  chrome.storage.local.get("checklists").then(async ({ checklists = {} }) => {
+    const Q = await import("../queue.js");
+    const on = !!Q.autoFor(c.id, checklists);
+    box.replaceChildren(toggle("Add new lectures to my AI list", on ? "Each new lecture's checklist joins Today › For your AI, ready when you are." : "Off: build checklists yourself from each lecture's menu.", on,
+      async (want) => { await Q.setAuto(c.id, want); if (want) Q.checkNewLectures({ force: true }); rerender(); }));
+  });
+  return box;
+}
+
+// ---------- Module groups: pin, reorder, collapse and hide (per course, synced). Nothing changes in Canvas. ----------
+// Until the student arranges a course, StudyPilot opens the current module and modules with new lectures,
+// and collapses the rest. Anything the student sets themselves always wins.
+const modId = (l) => (l.module_id != null ? `m${l.module_id}` : `n:${l.module}`);
+function currentModule(list) {
+  const now = Date.now() + 864e5;
+  let best = null, bestAt = -1;
+  for (const l of list) { const t = l.date ? Date.parse(l.date) : NaN; if (l.is_lecture && t <= now && t > bestAt) { bestAt = t; best = modId(l); } }
+  if (best) return best;
+  const lec = list.filter((l) => l.is_lecture).sort((a, b) => b.module_index - a.module_index)[0];
+  return lec ? modId(lec) : null;
+}
+async function saveLayout(courseId, change) {
+  const all = { ...(state.settings.moduleLayout || {}) };
+  const cur = { order: [], pinned: [], hidden: [], collapsed: {}, ...(all[courseId] || {}) };
+  all[courseId] = { ...cur, ...change(cur) };
+  await saveSettings({ moduleLayout: all });
+}
+function drawModules(box, c, list, shown, qs, quizzes) {
+  const L = { order: [], pinned: [], hidden: [], collapsed: {}, ...((state.settings.moduleLayout || {})[c.id] || {}) };
+  const arranging = state.arranging === c.id;
   const groups = new Map();
-  shown.forEach((l) => { if (!groups.has(l.module)) groups.set(l.module, { index: l.module_index, items: [] }); groups.get(l.module).items.push(l); });
-  for (const [module, g] of [...groups.entries()].sort((a, b) => b[1].index - a[1].index)) {
+  shown.forEach((l) => { const id = modId(l); if (!groups.has(id)) groups.set(id, { id, name: l.module, index: l.module_index, items: [] }); groups.get(id).items.push(l); });
+  // Canvas order is oldest first; StudyPilot shows newest first unless the student reordered.
+  const byDefault = [...groups.values()].sort((a, b) => b.index - a.index);
+  const pos = (g) => { const i = L.order.indexOf(g.id); return i < 0 ? -1 : i; };
+  let ordered = byDefault;
+  if (L.order.length) {
+    const known = byDefault.filter((g) => pos(g) >= 0).sort((a, b) => pos(a) - pos(b));
+    const fresh = byDefault.filter((g) => pos(g) < 0); // modules added since: on top
+    ordered = [...fresh, ...known];
+  }
+  const pinned = L.pinned.map((id) => groups.get(id)).filter(Boolean);
+  const visible = [...pinned, ...ordered.filter((g) => !L.pinned.includes(g.id) && !L.hidden.includes(g.id))];
+  const hidden = ordered.filter((g) => L.hidden.includes(g.id) && !L.pinned.includes(g.id));
+  const current = currentModule(list);
+  const isOpen = (g) => {
+    if (g.id in L.collapsed) return !L.collapsed[g.id];
+    return g.id === current || g.items.some((l) => l.is_new) || (visible.length <= 3 && g.items.some((l) => l.is_lecture));
+  };
+  // The full order as shown (pinned first), for moving things up and down.
+  const fullOrder = () => [...ordered.map((g) => g.id)];
+  const move = (g, dir) => saveLayout(c.id, (cur) => {
+    if (L.pinned.includes(g.id)) { const p = [...L.pinned]; const i = p.indexOf(g.id), j = i + dir; if (j < 0 || j >= p.length) return {}; [p[i], p[j]] = [p[j], p[i]]; return { pinned: p }; }
+    const o = fullOrder().filter((id) => !L.pinned.includes(id) && !L.hidden.includes(id));
+    const i = o.indexOf(g.id), j = i + dir; if (j < 0 || j >= o.length) return {};
+    [o[i], o[j]] = [o[j], o[i]];
+    // keep hidden ones where they were (at the end of the saved order)
+    return { order: [...o, ...fullOrder().filter((id) => L.hidden.includes(id) || L.pinned.includes(id))] };
+  }).then(rerender);
+
+  box.append(h("div", { class: "mod-bar" },
+    arranging ? h("span", { class: "grow meta" }, "Pin, move, collapse or hide modules. Only changes StudyPilot's view.") : h("span", { class: "grow" }),
+    arranging && (L.order.length || L.pinned.length || L.hidden.length || Object.keys(L.collapsed).length)
+      ? h("button", { class: "linkish", onclick: async () => { if (!confirm("Go back to Canvas's order and StudyPilot's automatic open/closed modules?")) return; await saveLayout(c.id, () => ({ order: [], pinned: [], hidden: [], collapsed: {} })); rerender(); } }, "Reset") : null,
+    h("button", { class: `btn small ${arranging ? "" : "soft"}`, onclick: () => { state.arranging = arranging ? null : c.id; rerender(); } }, arranging ? "Done" : [icon("arrange", 14), " Arrange"])));
+
+  const header = (g, i, n) => {
+    const open = isOpen(g) && !arranging;
     const mq = qs.filter((q) => g.items.some((l) => l.key === q.lectureKey));
-    box.append(h("div", { class: "group-title" }, h("span", {}, module),
-      g.items.length > 1 ? h("button", { class: "btn small soft", onclick: () => openSheet(moduleScope(c.id, module, g.items)) }, mq.length ? `Module · ${Math.round(scopeStats(mq).mastery * 100)}%` : "Whole module") : null));
-    g.items.forEach((l) => box.append(lectureRow(c.id, l, qs.filter((q) => q.lectureKey === l.key), quizzesFor(quizzes, { courseId: c.id, lectureKeys: [l.key] }).length)));
+    const isPinned = L.pinned.includes(g.id);
+    const count = plural(g.items.length, g.items.every((l) => l.is_lecture) ? "lecture" : "item");
+    const toggle = () => saveLayout(c.id, (cur) => ({ collapsed: { ...cur.collapsed, [g.id]: open } })).then(rerender);
+    return h("div", { class: `group-title mod-head${open ? " open" : ""}${isPinned ? " pinned" : ""}` },
+      h(arranging ? "span" : "button", arranging ? { class: "mod-toggle" } : { class: "mod-toggle", "aria-expanded": String(open), onclick: toggle, title: open ? "Collapse" : "Expand" },
+        arranging ? null : h("span", { class: "chev", "aria-hidden": "true" }, icon("chevron", 12)),
+        isPinned ? h("span", { class: "pin-mark", title: "Pinned to the top" }, icon("pin", 12)) : null,
+        h("span", { class: "mod-name" }, g.name),
+        !open ? h("small", {}, ` · ${count}${g.items.some((l) => l.is_new) ? " · new" : ""}`) : null),
+      arranging ? h("span", { class: "mod-tools" },
+        h("button", { class: `ghost small${isPinned ? " on" : ""}`, title: isPinned ? "Unpin" : "Pin to the top", "aria-label": `${isPinned ? "Unpin" : "Pin"} ${g.name}`, "aria-pressed": String(isPinned),
+          onclick: () => saveLayout(c.id, (cur) => ({ pinned: isPinned ? cur.pinned.filter((x) => x !== g.id) : [...cur.pinned, g.id], hidden: cur.hidden.filter((x) => x !== g.id) })).then(rerender) }, icon("pin", 16)),
+        h("button", { class: "ghost small", title: "Move up", "aria-label": `Move ${g.name} up`, disabled: i === 0 || (isPinned ? i === 0 : i === pinned.length), onclick: () => move(g, -1) }, icon("up", 16)),
+        h("button", { class: "ghost small", title: "Move down", "aria-label": `Move ${g.name} down`, disabled: isPinned ? i === pinned.length - 1 : i === n - 1, onclick: () => move(g, 1) }, icon("down", 16)),
+        h("button", { class: "ghost small", title: "Hide (it goes to “Hidden modules” at the bottom)", "aria-label": `Hide ${g.name}`,
+          onclick: () => saveLayout(c.id, (cur) => ({ hidden: [...new Set([...cur.hidden, g.id])], pinned: cur.pinned.filter((x) => x !== g.id) })).then(rerender) }, icon("hide", 16)))
+        : g.items.length > 1 ? h("button", { class: "btn small soft", onclick: () => openSheet(moduleScope(c.id, g.name, g.items)) }, mq.length ? `Module · ${Math.round(scopeStats(mq).mastery * 100)}%` : "Whole module") : null);
+  };
+  visible.forEach((g, i) => {
+    box.append(header(g, i, visible.length));
+    if (isOpen(g) && !arranging) g.items.forEach((l) => box.append(lectureRow(c.id, l, qs.filter((q) => q.lectureKey === l.key), quizzesFor(quizzes, { courseId: c.id, lectureKeys: [l.key] }).length)));
+  });
+  if (hidden.length) {
+    box.append(h("details", { class: "mod-hidden", open: arranging },
+      h("summary", {}, `Hidden modules (${hidden.length})`),
+      hidden.map((g) => h("div", { class: "row mod-hidden-row" }, h("span", { class: "grow" }, g.name, h("small", { class: "meta" }, ` · ${plural(g.items.length, "item")}`)),
+        h("button", { class: "btn small soft", onclick: () => saveLayout(c.id, (cur) => ({ hidden: cur.hidden.filter((x) => x !== g.id) })).then(rerender) }, "Show")))));
   }
 }
 
@@ -167,10 +280,10 @@ function lectureRow(courseId, l, qs, nQuizzes = 0) {
     h("button", { class: "lec-main", onclick: () => openSheet(lectureScope(courseId, l)), "aria-label": `${l.title}: practice, flashcards, study guide or download` },
       h("span", { class: "icon", "aria-hidden": "true" }, icon(isSlides ? "slides" : "file", 20)),
       h("span", { class: "grow" }, h("b", {}, l.title),
-        h("small", {}, [isSlides ? (l.pages ? `${l.pages} ${String(l.unit || "page").toLowerCase()}s` : "Slides / file") : "Page", l.date ? shortDate(l.date) : null, badge, nQuizzes ? plural(nQuizzes, "quiz", "quizzes") : null].filter(Boolean).join(" · "))),
+        h("small", {}, [l.type === "Notebook" ? (l.pages ? `Notebook · ${l.pages} cells` : "Notebook") : isSlides ? (l.pages ? `${l.pages} ${String(l.unit || "page").toLowerCase()}s` : "Slides / file") : "Page", l.date ? shortDate(l.date) : null, badge, nQuizzes ? plural(nQuizzes, "quiz", "quizzes") : null].filter(Boolean).join(" · "))),
       st.total ? h("span", { class: "lec-prog" }, chip(st.mastery), h("small", { title: `${Math.round(st.mastery * 100)}% mastered` }, st.due ? `${st.due} due` : st.level)) : null,
       l.is_new ? h("span", { class: "pill new" }, "New") : null),
-    h("a", { class: "ghost small", href: l.url, target: "_blank", "aria-label": "Open in Canvas", title: "Open in Canvas" }, icon("link", 16)));
+    h("a", { class: "ghost small", href: l.url, target: "_blank", "aria-label": l.type === "Notebook" ? "Open in JupyterHub" : "Open in Canvas", title: l.type === "Notebook" ? "Open in JupyterHub" : "Open in Canvas" }, icon("link", 16)));
 }
 
 // ---------- Grades (Grade Ledger) ----------
@@ -268,62 +381,139 @@ async function files(root, c) {
     act("Make course pack", () => makeProjectPack([c.id]), { cls: "btn block soft", ico: "export", busyLabel: "Building…" })));
 }
 
-// Jupyter notebooks for this course (folders picked once).
+// Jupyter notebooks for this course. Each course can use its own hub (found from the course's
+// "Open in Jupyter" links, or typed in once); folders are picked once per course.
+const hubHost = (u) => { try { return new URL(u).host; } catch { return u; } };
+async function connectHub(c, url) {
+  let base;
+  try { base = normalizeHubUrl(/^https?:/.test(url) ? url : "https://" + url); } catch { throw new Error("That doesn't look like a web address."); }
+  if (!/^https:/.test(base)) throw new Error("Use the hub's https:// address.");
+  if (!(await chrome.permissions.request({ origins: [new URL(base).origin + "/*"] }))) throw new Error("StudyPilot needs permission for that site to read your notebooks.");
+  await saveSettings({ jupyterHubs: { ...(state.settings.jupyterHubs || {}), [c.id]: base } });
+  toast(`${c.code || c.name} uses ${hubHost(base)}.`, { ms: 5000 });
+  rerender();
+}
+const hubState = (hub) => ((state.jup ||= {})[hub] ||= { status: null, scan: null, links: null });
+
 async function notebooksCard(c) {
-  const s = state.settings, J = state.jup;
+  const s = state.settings;
+  const hub = hubForCourse(s, c.id);
+  if (hub === "none") return h("div", { class: "hint", style: "margin:0 4px 8px" }, "Jupyter is off for this course. ",
+    h("button", { class: "linkish", onclick: async () => { const m = { ...(s.jupyterHubs || {}) }; delete m[c.id]; await saveSettings({ jupyterHubs: m }); rerender(); } }, "Turn it on"));
   const box = h("div", { class: "card" }, h("h3", {}, "Jupyter notebooks"));
-  if (!s.jupyterUrl) {
-    box.append(h("p", { class: "muted", style: "margin-top:0" }, "If this class uses JupyterHub (DataHub and similar), connect it once to download notebooks and practice from them."),
-      h("button", { class: "btn small secondary", onclick: () => go("settings", { settingsOpen: "connections" }) }, "Connect JupyterHub"));
-    return box;
-  }
-  if (!J.status) { try { J.status = await send("JUPYTER_STATUS"); } catch (e) { J.status = { state: "error", error: e.message }; } }
+  if (!hub) return setupHub(c, box);
+  const J = hubState(hub);
+  const host = hubHost(hub);
+  const change = h("button", { class: "linkish", onclick: async () => { const m = { ...(s.jupyterHubs || {}) }; m[c.id] = ""; delete m[c.id];
+    // forget the older shared hub for this course too
+    const f = { ...(s.jupyterCourseFolders || {}) }; if (s.jupyterUrl === hub) delete f[c.id];
+    await saveSettings({ jupyterHubs: m, jupyterCourseFolders: f }); rerender(); } }, "Change hub");
+  box.append(h("div", { class: "meta", style: "margin:-4px 0 8px" }, host, " · ", change));
+
+  if (!J.status) { try { J.status = await send("JUPYTER_STATUS", { hub }); } catch (e) { J.status = { state: "error", error: e.message }; } }
   const st = J.status;
-  const recheck = act("Check again", async () => { J.status = null; rerender(); }, { cls: "btn small soft" });
-  if (st.state === "login") { box.append(h("div", { class: "note" }, `Log in to ${new URL(s.jupyterUrl).host} first.`), h("div", { class: "actions" }, h("button", { class: "btn small", onclick: () => send("JUPYTER_LOGIN") }, "Log in"), recheck)); return box; }
-  if (st.state === "stopped") { box.append(h("div", { class: "muted" }, "Your server is off."), h("div", { class: "actions" }, act("Start my server", async () => { const r = await send("JUPYTER_START"); if (r.needsUser) toast("Pick your environment and press Start in the Jupyter tab, then press Check again.", { ms: 10000 }); J.status = null; rerender(); }, { cls: "btn small", busyLabel: "Starting…" }), recheck)); return box; }
-  if (st.state !== "running" && st.state !== "ok") { box.append(h("div", { class: "note" }, st.error || "Couldn't reach your hub."), h("div", { class: "actions" }, recheck)); return box; }
+  const recheck = act("Check again", async () => { J.status = null; J.scan = null; rerender(); }, { cls: "btn small soft" });
+  if (st.state === "login") { box.append(h("div", { class: "note" }, `Log in to ${host} first.`), h("div", { class: "actions" }, h("button", { class: "btn small", onclick: () => send("JUPYTER_LOGIN", { hub }) }, "Log in"), recheck)); return box; }
+  if (st.state === "stopped") { box.append(h("div", { class: "muted" }, "Your server is off."), h("div", { class: "actions" }, act("Start my server", async () => { const r = await send("JUPYTER_START", { hub }); if (r.needsUser) toast("Pick your environment and press Start in the Jupyter tab, then press Check again.", { ms: 10000 }); J.status = null; rerender(); }, { cls: "btn small", busyLabel: "Starting…" }), recheck)); return box; }
+  if (st.state !== "running" && st.state !== "ok") { box.append(h("div", { class: "note" }, st.error || `Couldn't reach ${host}.`), h("div", { class: "actions" }, recheck)); return box; }
+
+  // Course links that copy the latest class files into your server ("Open in Jupyter"), run first when that setting is on.
+  const pullLatest = async ({ quiet = false } = {}) => {
+    if (!J.links) J.links = await send("JUPYTER_FIND_LINKS", { hub, courseId: c.id });
+    if (!J.links.length) { if (!quiet) toast("No “Open in Jupyter” links found in this course.", { ms: 6000 }); return false; }
+    const res = await send("JUPYTER_PULL", { hub, links: J.links.map((l) => l.url) });
+    const bad = res.filter((r) => !r.ok);
+    if (!quiet || bad.length) toast(bad.length ? `Updated ${res.length - bad.length}/${res.length}. ${bad[0].error}` : "Course files are up to date", { error: !!bad.length, ms: 6000 });
+    J.scan = await send("JUPYTER_SCAN", { hub });
+    return true;
+  };
+  const pullFirst = async () => { if (state.settings.jupyterPullFirst !== false) await pullLatest({ quiet: true }).catch(() => {}); };
 
   const map = s.jupyterCourseFolders || {};
   const mine = map[c.id] || [];
   if (!J.scan) {
     box.append(h("p", { class: "muted", style: "margin-top:0" }, mine.length ? `Folders: ${mine.join(", ")}` : "Pick which of your Jupyter folders belong to this course."),
-      act(mine.length ? "Load notebooks" : "Choose folders", async () => { J.scan = await send("JUPYTER_SCAN"); rerender(); }, { cls: "btn small", busyLabel: "Scanning…" }));
+      act(mine.length ? "Load notebooks" : "Choose folders", async () => { J.scan = await send("JUPYTER_SCAN", { hub }); delete state.lectureCache[c.id]; rerender(); }, { cls: "btn small", busyLabel: "Scanning…" }));
     return box;
   }
   const groups = groupByTopFolder(J.scan.files);
-  if (!mine.length || J.picking === c.id) {
+  if (!mine.length || state.jupPicking === c.id) {
     const picked = new Set(mine);
     box.append(h("div", { class: "checks" }, groups.map((g) => h("label", {},
       h("input", { type: "checkbox", checked: picked.has(g.name), onchange: (e) => { e.target.checked ? picked.add(g.name) : picked.delete(g.name); } }),
       h("span", { class: "grow" }, h("b", {}, g.name), h("br"), h("small", {}, `${plural(g.notebooks, "notebook")} · ${g.files} files${g.latest ? ` · changed ${shortDate(g.latest)}` : ""}`)),
       h("small", {}, g.bytes ? fmtBytes(g.bytes) : "")))),
-      act("Save folders", async () => { await saveSettings({ jupyterCourseFolders: { ...map, [c.id]: [...picked] } }); J.picking = null; rerender(); }, { cls: "btn small block", attrs: { style: "margin-top:8px" } }));
+      act("Save folders", async () => {
+        // Saving folders also pins this hub to the course (so it no longer depends on the older shared setting).
+        await saveSettings({ jupyterCourseFolders: { ...map, [c.id]: [...picked] }, jupyterHubs: { ...(s.jupyterHubs || {}), [c.id]: hub } });
+        state.jupPicking = null; rerender();
+      }, { cls: "btn small block", attrs: { style: "margin-top:8px" } }));
     return box;
   }
-  const chosen = filesInGroups(J.scan.files, mine);
-  const nbs = chosen.filter((f) => NOTEBOOKISH.test(f.path)).sort((a, b) => (b.last_modified || "").localeCompare(a.last_modified || ""));
-  const links = (J.links || []).filter((l) => !l.course || l.course === c.name || l.course === c.code);
+  // What each notebook folder holds: lecture material becomes lectures (checklists, questions); assignments only
+  // help the study plan (their questions, never your answers); skipped folders are left alone.
+  const dirs = notebookDirs(J.scan.files, mine, (s.jupyterKinds || {})[c.id] || {});
+  const setKind = async (dir, kind) => {
+    const all = { ...(s.jupyterKinds || {}) };
+    all[c.id] = { ...(all[c.id] || {}), [dir]: kind };
+    await saveSettings({ jupyterKinds: all });
+    delete state.lectureCache[c.id];
+    rerender();
+  };
+  const lectureCount = Object.values(dirs).filter((g) => g.kind === "lecture").reduce((a, g) => a + g.notebooks.length, 0);
+  const kindsBox = h("details", { class: "nb-kinds", open: !((s.jupyterKinds || {})[c.id]) },
+    h("summary", {}, `${plural(lectureCount, "lecture notebook")} · what's in each folder`),
+    h("p", { class: "hint", style: "margin:4px 0 6px" }, "Lecture material shows up in Lectures (From JupyterHub) to learn and be quizzed on. Assignments are never quizzed; their questions only help size your study plan. StudyPilot guessed from the names; fix anything that's wrong."),
+    Object.entries(dirs).sort(([a], [b]) => a.localeCompare(b, undefined, { numeric: true })).map(([dir, g]) => h("div", { class: "row nb-kind-row" },
+      h("span", { class: "grow" }, h("b", {}, dir.split("/").slice(-2).join("/")), h("small", { class: "meta" }, ` · ${plural(g.notebooks.length, "notebook")}`)),
+      h("select", { "aria-label": `What's in ${dir}`, onchange: (e) => setKind(dir, e.target.value) },
+        [["lecture", "Lecture material"], ["assignment", "Assignments"], ["skip", "Skip"]].map(([v, l]) => h("option", { value: v, selected: g.kind === v }, l))))));
+  const filesNow = () => filesInGroups(J.scan.files, mine);
+  const notebooksNow = () => filesNow().filter((f) => NOTEBOOKISH.test(f.path)).sort((a, b) => (b.last_modified || "").localeCompare(a.last_modified || ""));
+  const nbs = notebooksNow();
   box.append(h("div", { class: "row" }, h("div", { class: "grow meta" }, `${mine.join(", ")} · ${plural(nbs.length, "notebook")}`),
-      h("button", { class: "btn small soft", onclick: () => { J.picking = c.id; rerender(); } }, "Change")),
+      h("button", { class: "btn small soft", onclick: () => { state.jupPicking = c.id; rerender(); } }, "Change")),
+    kindsBox,
     h("div", { class: "actions" },
-      act("Practice", () => openSheet({ kind: "notebooks", courseId: c.id, title: `${c.code || c.name} notebooks`, notebooks: nbs.slice(0, 40).map(({ path, last_modified }) => ({ path, last_modified })), lectures: [{ key: `nb:${c.id}`, title: `${c.code || c.name} notebooks`, module: "Notebooks" }] }), { ico: "play" }),
+      act("Study the lectures", async () => {
+        await pullFirst();
+        delete state.lectureCache[c.id];
+        openCourse(c.id, "lectures");
+      }, { ico: "play", busyLabel: "Getting files…", attrs: { disabled: !lectureCount, title: lectureCount ? "Lecture notebooks are in Lectures › From JupyterHub" : "Mark a folder as lecture material first" } }),
       act("Download", async () => {
+        await pullFirst();
+        const chosen = filesNow();
         if (!confirmSize(chosen.reduce((n, f) => n + (f.size || 0), 0), "These notebooks and files", "(Only new or changed files are zipped, so it may be smaller.)")) return;
-        const r = await send("JUPYTER_DOWNLOAD", { files: chosen.map(({ path, size, last_modified }) => ({ path, size, last_modified })), onlyNew: true });
+        const r = await send("JUPYTER_DOWNLOAD", { hub, files: chosen.map(({ path, size, last_modified }) => ({ path, size, last_modified })), onlyNew: true });
         toast(r.zips.length ? `Saved ${plural(r.zips.length, "zip")} (${r.done} files) to Downloads › StudyPilot` : "Everything is already up to date", { ms: 8000 });
       }, { cls: "btn secondary", ico: "download", busyLabel: "Zipping…" })),
     h("div", { class: "row", style: "margin-top:8px" },
-      act("Get the latest course files", async () => {
-        if (!J.links) J.links = await send("JUPYTER_FIND_LINKS");
-        const mineLinks = J.links.filter((l) => !l.course || l.course === c.name || l.course === c.code).map((l) => l.url);
-        if (!mineLinks.length) return toast("No “Open in Jupyter” links found in this course.", { ms: 6000 });
-        const res = await send("JUPYTER_PULL", { links: mineLinks });
-        const bad = res.filter((r) => !r.ok);
-        toast(bad.length ? `Updated ${res.length - bad.length}/${res.length}. ${bad[0].error}` : "Course files are up to date", { error: !!bad.length, ms: 6000 });
-        J.scan = await send("JUPYTER_SCAN"); rerender();
-      }, { cls: "btn small soft block", ico: "refresh", busyLabel: "Updating…" })),
-    links.length ? h("div", { class: "hint" }, `${plural(links.length, "course link")} found. Your own edits are kept.`) : h("div", { class: "hint" }, "Save open notebooks first (Ctrl/⌘ + S); StudyPilot gets the last saved version."));
+      act("Get the latest course files", async () => { await pullLatest(); rerender(); }, { cls: "btn small soft block", ico: "refresh", busyLabel: "Updating…" })),
+    J.links?.length ? h("div", { class: "hint" }, `${plural(J.links.length, "course link")} found. Your own edits are kept.`) : h("div", { class: "hint" }, "Save open notebooks first (Ctrl/⌘ + S); StudyPilot gets the last saved version."));
+  return box;
+}
+
+// No hub for this course yet: suggest the one its Canvas links point to, other hubs already connected, or type one.
+async function setupHub(c, box) {
+  const s = state.settings;
+  state.jupDetect ||= {};
+  if (!(c.id in state.jupDetect)) { try { state.jupDetect[c.id] = await send("JUPYTER_DETECT", { courseId: c.id }); } catch { state.jupDetect[c.id] = []; } }
+  const found = state.jupDetect[c.id];
+  const others = knownHubs(s).filter((x) => !found.some((f) => f.hub === x));
+  const input = h("input", { type: "url", placeholder: "https://jupyter.yourschool.edu", "aria-label": "This course's JupyterHub address" });
+  const off = h("button", { class: "linkish", onclick: async () => { await saveSettings({ jupyterHubs: { ...(s.jupyterHubs || {}), [c.id]: "none" } }); rerender(); } }, "This course doesn't use Jupyter");
+  if (found.length) {
+    box.append(h("p", { class: "muted", style: "margin-top:0" }, `This course links to ${found.length === 1 ? "a JupyterHub" : "these JupyterHubs"}. Connect once to download its notebooks and practice from them (no password or token; StudyPilot uses your normal login).`),
+      h("div", { class: "actions" }, found.map((f) => act(`Use ${hubHost(f.hub)}`, () => connectHub(c, f.hub), { cls: "btn small", busyLabel: "Connecting…" }))));
+  } else {
+    box.append(h("p", { class: "muted", style: "margin-top:0" }, "If this class uses JupyterHub (DataHub and similar), add its address once to download notebooks and practice from them. No password or token; StudyPilot uses your normal login."));
+  }
+  if (others.length) box.append(h("div", { class: "actions" }, others.map((x) => act(`Same as another course: ${hubHost(x)}`, () => connectHub(c, x), { cls: "btn small secondary", busyLabel: "Connecting…" }))));
+  box.append(h("div", { class: "row", style: "margin-top:8px" }, h("div", { class: "grow" }, input),
+      act(found.length ? "Use this one" : "Connect", () => connectHub(c, input.value.trim()), { cls: "btn small secondary", busyLabel: "Connecting…" })),
+    h("div", { class: "hint" }, off));
+  // Prefill from an open hub tab, if the student has one.
+  chrome.tabs.query({}).then((tabs) => { const t = tabs.find((x) => /^https:/.test(x.url || "") && /\/(hub|user)\/[^/]*\/?/.test(x.url || "")); if (t && !input.value) input.value = normalizeHubUrl(t.url); }).catch(() => {});
   return box;
 }
 
@@ -469,8 +659,23 @@ async function gradescopeCard(c, { refresh = false } = {}) {
   } }, h("option", { value: "" }, "Choose the Gradescope course…"),
     (info.courses || []).map((g) => h("option", { value: g.id, selected: g.id === info.gsId }, `${g.short}${g.term ? ` (${g.term})` : ""}`)),
     h("option", { value: "none" }, "This course doesn't use Gradescope"));
+  const useLink = async () => {
+    const v = prompt("Paste the Gradescope course's address (it looks like gradescope.com/courses/123456):") || "";
+    const m = v.match(/gradescope\.com\/courses\/(\d+)/);
+    if (!m) return v && toast("That isn't a Gradescope course address.", { error: true });
+    state.gsPicking = null;
+    await saveSettings({ gradescopeMap: { ...map, [c.id]: m[1] } }); again();
+  };
   if (!info.gsId) {
-    box.append(h("p", { class: "muted", style: "margin-top:0" }, "Which Gradescope course is this?"), picker());
+    const none = !(info.courses || []).length;
+    box.append(h("p", { class: "muted", style: "margin-top:0" }, none
+      ? "StudyPilot couldn't read your Gradescope course list. Open this course on Gradescope and press Check again, or paste its address."
+      : "Which Gradescope course is this?"),
+      none ? null : picker(),
+      h("div", { class: "actions" },
+        act("Check again", async () => { delete state.gsCache[c.id]; state.gsCache[c.id] = await send("GS_COURSE", { courseId: c.id, refresh: true }); rerender(); }, { cls: "btn small soft", busyLabel: "Checking…" }),
+        h("button", { class: "btn small soft", onclick: useLink }, "Paste the course address"),
+        none ? h("button", { class: "linkish", onclick: async () => { await saveSettings({ gradescopeMap: { ...map, [c.id]: "none" } }); again(); } }, "This course doesn't use Gradescope") : null));
     return box;
   }
   const list = info.assignments || [];

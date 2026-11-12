@@ -1,0 +1,13 @@
+/* StudyPilot on Canvas's calendar: drawn on top, never blocks clicks */
+.sp-cal-layer { position: absolute; inset: 0; pointer-events: none; z-index: 3; }
+.sp-cal-ev { position: absolute; box-sizing: border-box; border-radius: 6px; padding: 2px 5px; font: 600 11px/1.25 system-ui, -apple-system, "Segoe UI", sans-serif; overflow: hidden; color: #1d1b18; }
+.sp-cal-ev b, .sp-cal-ev span { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sp-cal-ev span { font-weight: 500; opacity: .85; }
+.sp-cal-ev.sp-study { background: rgba(31, 122, 74, .12); border-left: 3px solid #1f7a4a; color: #1f7a4a; }
+.sp-cal-ev.sp-plan { background: #fff; border: 1px solid #1f7a4a; border-left: 4px solid var(--sp-c, #1f7a4a); box-shadow: 0 1px 3px rgba(0,0,0,.12); z-index: 2; }
+.sp-cal-ev.sp-plan.sp-done { opacity: .5; text-decoration: line-through; }
+.sp-cal-ev.sp-class { background: color-mix(in srgb, var(--sp-c, #888) 18%, #fff); border-left: 4px solid var(--sp-c, #888); }
+.sp-cal-ev.sp-office { background: repeating-linear-gradient(135deg, color-mix(in srgb, var(--sp-c, #888) 10%, #fff) 0 6px, #fff 6px 12px); border: 1px dashed var(--sp-c, #888); }
+.sp-cal-toggle { position: fixed; left: 16px; bottom: 16px; z-index: 9999; border: 1px solid #1f7a4a; background: #fff; color: #1f7a4a; font: 700 12px system-ui, sans-serif; padding: 8px 12px; border-radius: 999px; cursor: pointer; box-shadow: 0 4px 14px rgba(0,0,0,.15); }
+.sp-cal-toggle[aria-pressed="false"] { background: #1f7a4a; color: #fff; }
+.sp-cal-toggle:focus-visible { outline: 2px solid #2f6fed; outline-offset: 2px; }

@@ -6,15 +6,76 @@ import { bank, makeQuiz, makeStudyGuide, lectureScope } from "../sheet.js";
 import { examPlan } from "../../lib/examplan.js";
 import { openFocusSheet } from "../focus.js";
 import { startSession } from "../runner.js";
-import { openWork, planPack, studyPagePack } from "../../lib/packs.js";
-import { sessionsIcs, deadlinesIcs } from "../../lib/ics.js";
+import { openWork, studyPagePack } from "../../lib/packs.js";
+import { deadlinesIcs } from "../../lib/ics.js";
 import { buildSession, isDue } from "../../lib/quiz.js";
 import { PROVIDERS } from "../../lib/ai.js";
 import { canFill, requestFillPermission } from "../../lib/autofill.js";
 import { icon } from "../../lib/icons.js";
+import { weekEvents, mondayOf, ymd, niceTime, toMin, emptyWeek } from "../../lib/schedule.js";
+
+// ---------- "For your AI": everything waiting for the student's AI, run one after another ----------
+async function aiListCard() {
+  const Q = await import("../queue.js");
+  const list = await Q.getQueue();
+  if (!list.length && !state.queueRun) return null;
+  const name = ai().url ? ai().name : "your AI";
+  const running = state.queueRun;
+  const rows = list.slice(0, 6).map((j) => {
+    const lb = Q.jobLabel(j);
+    return h("div", { class: "ai-job" },
+      h("span", { class: "grow" }, h("b", {}, lb.title), lb.sub ? h("small", {}, lb.sub) : null),
+      h("button", { class: "btn tiny soft", title: "Do just this one now", onclick: () => Q.startQueue(j.id).catch((e) => toast(e.message, { error: true })) }, "Now"),
+      h("button", { class: "x-btn", title: "Remove from the list", "aria-label": `Remove ${lb.title}`, onclick: async () => {
+        if (j.kind === "checklist") await Q.skipLecture(j.lecture?.key);
+        await Q.removeJob(j.id);
+      } }, icon("close", 14)));
+  });
+  return h("div", { class: "card ai-list" },
+    h("div", { class: "row" }, h("h3", { class: "grow", style: "margin:0" }, `For ${name}`), h("span", { class: "pill" }, plural(list.length, "request"))),
+    h("p", { class: "muted", style: "margin:4px 0 8px" }, running ? `Working through the list (${running.done} done). Press Send in ${name} each time; StudyPilot picks up each answer and fills in the next.`
+      : `Start fills in the first request in ${name}. Press Send; when the answer comes in, the next one is filled in. You only press Send.`),
+    rows, list.length > 6 ? h("div", { class: "muted" }, `and ${list.length - 6} more`) : null,
+    h("div", { class: "actions", style: "margin-top:8px" },
+      running ? h("button", { class: "btn small soft", onclick: Q.stopQueue }, "Stop after this one")
+        : list.length ? h("button", { class: "btn small", onclick: () => Q.startQueue().catch((e) => toast(e.message, { error: true })) }, `Start (${list.length})`) : null));
+}
+
+// ---------- today's classes and study time (from My week) ----------
+async function todayScheduleCard() {
+  const week = { ...emptyWeek(), ...((await chrome.storage.local.get("week")).week || {}) };
+  const open = () => import("../weekai.js").then((m) => m.openWeek());
+  const courses = visibleSnapshot()?.courses || [];
+  const has = (week.blocks || []).length || Object.values(week.classes || {}).some((c) => c.meetings?.length);
+  if (!has) return h("div", { class: "card" }, h("h3", {}, "My week"),
+    h("p", { class: "muted", style: "margin:0 0 8px" }, "Your class times and the times you're free to study, on one weekly calendar. Your AI can find class times in your syllabi."),
+    h("button", { class: "btn small", onclick: open }, "Set up My week"));
+  const now = new Date(), key = ymd(now), nowMin = now.getHours() * 60 + now.getMinutes();
+  const terms = Object.fromEntries(courses.map((c) => [c.id, { start: c.term_start ? ymd(new Date(c.term_start)) : null, end: c.term_end ? ymd(new Date(c.term_end)) : null }]));
+  const evs = weekEvents(week, mondayOf(now), { courses, terms }).filter((e) => e.date === key && e.type !== "choose").sort((a, b) => toMin(a.start) - toMin(b.start));
+  const name = (id) => { const c = courses.find((x) => x.id === id); return c ? c.code || c.name : ""; };
+  const rows = evs.map((e) => {
+    const past = toMin(e.end) <= nowMin, nowOn = toMin(e.start) <= nowMin && nowMin < toMin(e.end);
+    return h("div", { class: `sched-row${past ? " past" : ""}${nowOn ? " now" : ""}`, style: e.courseId ? `--c:${courseColor(e.courseId)}` : "" },
+      h("span", { class: "sched-time" }, `${niceTime(e.start)}–${niceTime(e.end)}`),
+      h("span", { class: `sched-bar ${e.type}` }),
+      h("span", { class: "grow" }, e.type === "study" ? h("b", {}, "Study time") : [h("b", {}, `${name(e.courseId)} ${e.meeting.label}`), e.meeting.location ? h("small", {}, ` · ${e.meeting.location}`) : null]),
+      nowOn ? h("span", { class: "pill now" }, "Now") : null);
+  });
+  return h("div", { class: "card" }, h("div", { class: "row" }, h("h3", { class: "grow", style: "margin:0" }, "Today"), h("button", { class: "btn small soft", onclick: open }, "My week")),
+    rows.length ? h("div", { class: "sched", style: "margin-top:8px" }, rows) : h("div", { class: "muted", style: "margin-top:6px" }, "No classes or study time today."));
+}
+
+// Exam prep: a course quiz on the lectures this exam covers.
+async function prepFor(exam, allExams) {
+  const { examLectures } = await import("../../lib/examplan.js");
+  const lectures = await lecturesFor(exam.courseId).catch(() => []);
+  const keys = examLectures(exam, allExams.filter((x) => x.courseId === exam.courseId), lectures).map((l) => l.key);
+  (await import("../coursequiz.js")).openCourseQuiz(exam.courseId, { preselect: keys.length ? keys : null });
+}
 
 // ---------- exam countdown ----------
-async function countdownCard(exam, allExams, bankAll) {
+async function countdownCard(exam, allExams, bankAll, { planned = false } = {}) {
   const [lectures, { lectureTopics = {} }] = await Promise.all([lecturesFor(exam.courseId).catch(() => []), chrome.storage.local.get("lectureTopics")]);
   const topicsByLecture = Object.fromEntries(Object.entries(lectureTopics).map(([k, v]) => [k, v.topics || []]));
   const P = examPlan({ exam, allExams, lectures, questions: bankAll, topicsByLecture });
@@ -22,7 +83,7 @@ async function countdownCard(exam, allExams, bankAll) {
   const examScope = { kind: "module", courseId: exam.courseId, title: `${exam.title} prep`, lectures: P.lectures };
   const qsFor = () => P.questions;
   const run = async (st) => {
-    if (st.kind === "quiz") return makeQuiz(lectureScope(exam.courseId, st.lecture));
+    if (st.kind === "quiz") { const { openSheet } = await import("../sheet.js"); return openSheet(lectureScope(exam.courseId, st.lecture)); }
     if (st.kind === "guide") return makeStudyGuide(lectureScope(exam.courseId, st.lecture));
     if (st.kind === "missing") return makeQuiz(examScope, { focus: st.topics });
     if (st.kind === "weak") return views.startScope({ kind: "topics", courseId: exam.courseId, topics: st.topics, title: `${exam.title}: weak topics` }, "weak");
@@ -41,12 +102,13 @@ async function countdownCard(exam, allExams, bankAll) {
     h("div", { class: "meta" }, [P.lectures.length ? plural(P.lectures.length, "lecture") : null,
       P.coverage.total ? `${P.coverage.covered} of ${P.coverage.total} topics practiced` : P.lectures.length ? `${P.lectures.length - P.noQuestions.length} of ${P.lectures.length} lectures practiced` : null,
       P.questions.length ? `${Math.round(P.mastery * 100)}% mastered` : "no questions yet"].filter(Boolean).join(" · ")),
-    P.steps.length ? h("div", { class: "field" }, "Today") : null,
-    P.steps.map((st) => h("button", { class: "sheet-tile", onclick: async (e) => { const b = e.currentTarget; b.disabled = true; try { await run(st); } catch (err) { toast(err.message, { error: true, ms: 8000 }); } finally { b.disabled = false; } } },
+    planned ? h("div", { class: "hint", style: "margin-top:6px" }, "Your study plan covers this exam: today's work for it is in Today's plan.") : null,
+    !planned && P.steps.length ? h("div", { class: "field" }, "Today") : null,
+    (planned ? [] : P.steps).map((st) => h("button", { class: "sheet-tile", onclick: async (e) => { const b = e.currentTarget; b.disabled = true; try { await run(st); } catch (err) { toast(err.message, { error: true, ms: 8000 }); } finally { b.disabled = false; } } },
       h("span", { class: "ico-wrap" }, icon(STEP_ICON[st.kind] || "play", 18)), h("span", { class: "grow" }, h("b", {}, st.title), h("small", {}, st.sub)), icon("chevron", 16))),
     h("div", { class: "actions" },
       h("button", { class: "btn small soft", onclick: () => openFocusSheet({ courseId: exam.courseId }) }, icon("timer", 14), " Focus session"),
-      h("button", { class: "btn small soft", onclick: () => { state.exam = { courseId: exam.courseId, modules: null, count: 20, timed: true }; go("practice"); } }, "More exam prep")),
+      h("button", { class: "btn small soft", onclick: () => prepFor(exam, allExams) }, "Course quiz")),
     P.days > 2 ? h("div", { class: "hint" }, "Each day: fill gaps first, then review. The last two days switch to timed practice exams.") : null);
 }
 
@@ -79,42 +141,9 @@ async function changesCard() {
       } }, "Turn on notifications"), " · ", h("button", { class: "linkish", onclick: async () => { await saveSettings({ alertsAsked: true }); rerender(); } }, "No thanks")) : null);
 }
 
-export async function planMyWeek() {
-  if (!state.snapshot) state.snapshot = await send("SYNC");
-  let busyTimes = [];
-  if (state.gcal.connected) busyTimes = await send("GCAL_BUSY").catch(() => []);
-  else if (state.settings.icalUrl) {
-    try { busyTimes = await send("CAL_FEED_BUSY"); }
-    catch (e) { toast(`Couldn't read your calendar link: ${e.message} The plan will ask about your schedule instead.`, { error: true, ms: 9000 }); }
-  }
-  const exams = (await send("ALL_EXAMS").catch(() => [])).filter((e) => Date.parse(e.date) < Date.now() + ((state.settings.daysAhead || 14) + 21) * 864e5);
-  await handToAI(planPack(visibleSnapshot(), state.settings, { tz, busy: busyTimes, exams }), { expect: "plan", title: "Study plan" });
-}
-
 async function pushDeadlines() {
   if (state.gcal.connected) { const r = await send("GCAL_PUSH_DEADLINES"); toast(`Added ${r.count} deadlines to Google Calendar`); }
   else { await downloadText(`canvas-deadlines-${today()}.ics`, deadlinesIcs(state.snapshot), "text/calendar"); toast("Open the downloaded file to add deadlines to your calendar.", { ms: 7000 }); }
-}
-
-function planCard() {
-  const list = state.planSessions;
-  if (!list?.length) return null;
-  const fmt = (iso) => new Date(iso).toLocaleString([], { weekday: "short", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
-  return h("div", { class: "card" }, h("h3", {}, `Your plan: ${plural(list.length, "session")}`),
-    h("div", { class: "planlist" }, list.slice(0, 8).map((x) => h("div", { class: "item" }, h("div", { class: "main" },
-      h("div", { class: "name" }, x.title), h("div", { class: "meta" }, `${fmt(x.start)} – ${new Date(x.end).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`), x.goal ? h("div", { class: "meta" }, x.goal) : null)))),
-    list.length > 8 ? h("div", { class: "muted" }, `+${list.length - 8} more`) : null,
-    h("div", { class: "actions" },
-      state.gcal.connected
-        ? act("Add to Google Calendar", async () => {
-          const r = await send("GCAL_IMPORT_PLAN", { text: JSON.stringify({ sessions: list }) });
-          toast(`Added ${r.count} study sessions (earlier StudyPilot sessions were replaced)`); state.planSessions = null; rerender();
-        }, { busyLabel: "Adding…", ico: "calendar" })
-        : act("Add to calendar", async () => {
-          await downloadText(`study-plan-${today()}.ics`, sessionsIcs(list), "text/calendar");
-          toast("Open the downloaded file to add the sessions to any calendar app.", { ms: 8000 });
-        }, { ico: "calendar" }),
-      h("button", { class: "btn soft", onclick: () => { state.planSessions = null; rerender(); } }, "Dismiss")));
 }
 
 // Canvas sites StudyPilot can spot in your open tabs (custom school domains are typed in instead).
@@ -228,6 +257,11 @@ views.today = async (root) => {
     h("div", { class: "stat green" }, h("b", {}, week), h("span", {}, "This week"))));
 
   root.append(await changesCard());
+  const aiList = await aiListCard();
+  if (aiList) root.append(aiList);
+  const P = await import("../plan.js");
+  root.append(await P.planCard().catch((e) => h("div", { class: "note" }, `Study plan: ${e.message}`)));
+  root.append(await todayScheduleCard());
 
   // Review due + plan (the two things to do every day)
   const all = await bank();
@@ -241,7 +275,7 @@ views.today = async (root) => {
   root.append(h("div", { class: "quick" },
     qa("review", due.length ? `Review ${due.length}` : "Review", due.length ? "Questions due today" : all.length ? "All caught up" : "Add questions from a lecture",
       async () => { if (due.length) startSession(buildSession(due, { mode: "review", count: 20 }), { mode: "review", title: "Today's review" }); else go("practice"); }, due.length ? "hot" : ""),
-    qa("calendar", "Plan my week", `${p.url ? p.name : "Your AI"} builds a schedule`, planMyWeek),
+    qa("calendar", "Study plan", "Pick what you're studying for", () => P.openPlanSheet()),
     qa("pen", "Explain this page", "The Canvas tab you're on", async () => handToAI(studyPagePack(await readActiveTab()), { title: "This page" })),
     qa("clock", "Deadlines → calendar", state.gcal.connected ? "Add to Google Calendar" : "Calendar file for any app", pushDeadlines)));
 
@@ -249,18 +283,18 @@ views.today = async (root) => {
   const exams = allExams.filter((e) => Date.parse(e.date) < Date.now() + 21 * DAY);
   // Countdown plan for the next exam within two weeks
   const soon = exams.find((e) => Date.parse(e.date) < Date.now() + 15 * DAY);
-  if (soon) root.append(await countdownCard(soon, allExams, all).catch(() => ""));
+  const { plan: curPlan } = await chrome.storage.local.get("plan");
+  const planned = (e) => !!curPlan?.selection?.exams?.includes(P.examKey(e)) && curPlan.to >= ymd(new Date());
+  if (soon) root.append(await countdownCard(soon, allExams, all, { planned: planned(soon) }).catch(() => ""));
   if (exams.length) root.append(h("div", { class: "card" }, h("h3", {}, "Exams coming up"),
     exams.slice(0, 5).map((e) => {
       const n = Math.round((new Date(new Date(e.date).toDateString()) - new Date(new Date().toDateString())) / DAY);
       return h("div", { class: "item" }, h("span", { class: "dot", style: `background:${courseColor(e.courseId)}` }),
         h("div", { class: "main" }, h("div", { class: "name" }, `${e.course}: ${e.title}`), h("div", { class: "meta" }, new Date(e.date).toLocaleDateString([], { weekday: "short", month: "short", day: "numeric" }))),
         h("span", { class: `pill ${n <= 3 ? "now" : n <= 10 ? "soon" : ""}` }, n === 0 ? "today" : n === 1 ? "tomorrow" : `in ${n} days`),
-        h("button", { class: "btn small soft", onclick: () => { state.exam = { courseId: e.courseId, modules: null, count: 20, timed: true }; go("practice"); } }, "Prep"));
+        h("button", { class: "btn small soft", onclick: () => prepFor(e, allExams) }, "Prep"));
     })));
 
-  const plan = planCard();
-  if (plan) root.append(plan);
 
   const next = h("div", { class: "card" }, h("h3", {}, "Next up"));
   const upcoming = work.slice(0, 7);

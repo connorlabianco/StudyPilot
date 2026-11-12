@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>StudyPilot: lecture</title>
+<link rel="icon" href="../icons/icon32.png">
+<link rel="stylesheet" href="../vendor/katex/katex.min.css">
+<link rel="stylesheet" href="slide.css">
+<script src="../vendor/katex/katex.min.js"></script>
+</head>
+<body>
+<header>
+  <img src="../icons/icon32.png" alt="" width="24" height="24">
+  <div class="grow"><b id="title">Loading lecture…</b><div id="sub" class="muted"></div></div>
+  <a id="canvas" class="btn ghost" target="_blank" rel="noopener" hidden>Open in Canvas</a>
+</header>
+<div id="note" class="note" hidden></div>
+<nav class="pager" aria-label="Slides">
+  <button id="prev" class="btn" aria-label="Previous slide">&larr;</button>
+  <span id="pos" aria-live="polite"></span>
+  <button id="next" class="btn" aria-label="Next slide">&rarr;</button>
+</nav>
+<main id="stage" tabindex="-1"></main>
+<p class="hint">Arrow keys move between slides. Keep this tab open: other questions about this lecture open here too.</p>
+<script type="module" src="slide.js"></script>
+</body>
+</html>

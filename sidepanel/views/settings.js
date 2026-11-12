@@ -1,5 +1,5 @@
 // Settings, grouped: Your AI · Appearance · Canvas pages · Study & quizzes · Connections · Courses · Data & privacy.
-import { h, $, state, views, send, toast, act, ai, plural, visibleSnapshot, saveSettings, sync, toggle, seg, currentLook, rerender, relDue,
+import { h, $, state, views, send, toast, act, ai, plural, visibleSnapshot, courseName, saveSettings, sync, toggle, seg, currentLook, rerender, relDue,
   shortDate, fmtBytes, downloadText, today, tz, askFileHostAccess, copyText, DAY, speedControl } from "../core.js";
 import { handToAI } from "../aiflow.js";
 import { makeProjectPack } from "./courses.js";
@@ -8,7 +8,7 @@ import { DEFAULT_LOOK, SWATCHES, THEMES, FONTS, isDarkTheme } from "../../lib/lo
 import { openWork, exportPack, exportIsEmpty, PROJECT_INSTRUCTIONS } from "../../lib/packs.js";
 import { deadlinesIcs } from "../../lib/ics.js";
 import { normalizeFeedUrl } from "../../lib/ical.js";
-import { normalizeHubUrl } from "../../lib/jupyter.js";
+import { knownHubs } from "../../lib/jupyter.js";
 import { allQuestions, exportBank, importBank, putQuestions, clearPractice, allQuizzes, importQuizzes, putQuizzes } from "../../lib/quiz.js";
 import { canFill, requestFillPermission, hasFillPermission } from "../../lib/autofill.js";
 
@@ -199,7 +199,12 @@ function calendarSection() {
           h("div", { class: "actions" },
             act("Add deadlines", async () => { const r = await send("GCAL_PUSH_DEADLINES"); toast(`Added ${r.count} deadlines`); }, { cls: "btn small soft", busyLabel: "Adding…" }),
             act("Remove deadlines", async () => { const r = await send("GCAL_REMOVE", { kind: "deadline" }); toast(`Removed ${r.count} deadline events`); }, { cls: "btn small soft" }),
-            act("Remove sessions", async () => { const r = await send("GCAL_REMOVE", { kind: "session" }); toast(`Removed ${r.count} study sessions`); }, { cls: "btn small soft" })))
+            act("Remove sessions", async () => { const r = await send("GCAL_REMOVE", { kind: "session" }); toast(`Removed ${r.count} study sessions`); }, { cls: "btn small soft" })),
+            toggle("Keep My week in Google Calendar", "Your class times and planned study sittings for the next two weeks, updated when your week or plan changes. Only StudyPilot's own events are changed.", !!s.gcalWeekSync, async (v) => {
+              await saveSettings({ gcalWeekSync: v });
+              if (v) { const r = await send("GCAL_PUSH_WEEK"); toast(`Added ${r.count} events to Google Calendar`); }
+              else { const r = await send("GCAL_REMOVE_WEEK"); toast(`Removed ${r.count} StudyPilot events`); }
+            }))
         : act("Connect Google Calendar", async () => { await send("GCAL_CONNECT"); state.gcal = await send("GCAL_STATUS"); toast("Google Calendar connected"); rerender(); }, { cls: "btn small block", busyLabel: "Opening Google…" }),
     h("button", { class: "btn small soft block", style: "margin-top:8px", onclick: () => {
       if (!state.snapshot) return toast("Sync Canvas first.", { error: true });
@@ -208,33 +213,41 @@ function calendarSection() {
 }
 
 // ---------- JupyterHub ----------
+// Each course has its own hub, set on the course's Files page. Here: which hubs are in use, and by which courses.
 function jupyterSection() {
   const s = state.settings;
   const box = h("div", {}, h("div", { class: "subhead" }, "JupyterHub"));
-  if (!s.jupyterUrl) {
-    const input = h("input", { type: "url", id: "hubUrl", placeholder: "https://datahub.yourschool.edu", "aria-label": "JupyterHub address" });
-    chrome.tabs.query({}).then((tabs) => { const t = tabs.find((x) => /\/(hub|user)\/[^/]*\/?/.test(x.url || "") && /^https:/.test(x.url || "")); if (t && !input.value) input.value = normalizeHubUrl(t.url); });
-    box.append(h("p", { class: "muted", style: "margin-top:0" }, "For classes with notebooks. No password or token needed; StudyPilot uses your normal login."), input,
-      act("Connect", async () => {
-        let base;
-        try { base = normalizeHubUrl(input.value.startsWith("http") ? input.value : "https://" + input.value); } catch { throw new Error("That doesn't look like a web address."); }
-        if (!(await chrome.permissions.request({ origins: [new URL(base).origin + "/*"] }))) throw new Error("StudyPilot needs permission for that site to read your files.");
-        await saveSettings({ jupyterUrl: base });
-        state.jup = { status: null, links: null, scan: null };
-        toast("Connected. Pick folders on each course's Files page.", { ms: 6000 }); rerender();
-      }, { cls: "btn small block", busyLabel: "Connecting…", attrs: { style: "margin-top:8px" } }));
+  const hubs = knownHubs(s);
+  const host = (u) => { try { return new URL(u).host; } catch { return u; } };
+  if (!hubs.length) {
+    box.append(h("p", { class: "muted", style: "margin-top:0" }, "For classes with notebooks. Each course can use its own hub: open the course's Files page and StudyPilot finds it from the course's “Open in Jupyter” links, or you type it in once. No password or token needed."));
     return box;
   }
+  const map = s.jupyterHubs || {}, folders = s.jupyterCourseFolders || {};
+  const coursesOn = (hub) => Object.entries(map).filter(([, x]) => x === hub).map(([id]) => courseName(Number(id) || id))
+    .concat(hub === s.jupyterUrl ? Object.keys(folders).filter((id) => !map[id] && folders[id]?.length).map((id) => courseName(Number(id) || id)) : []);
+  for (const hub of hubs) {
+    const used = coursesOn(hub);
+    box.append(h("div", { class: "row", style: "margin-bottom:6px" },
+      h("div", { class: "grow" }, host(hub), h("div", { class: "meta" }, used.length ? used.join(", ") : "No course picked yet")),
+      h("button", { class: "btn small secondary", onclick: async () => {
+        const m = { ...map }, f = { ...folders };
+        for (const [id, x] of Object.entries(m)) if (x === hub) { delete m[id]; delete f[id]; }
+        if (s.jupyterUrl === hub) for (const id of Object.keys(f)) if (!map[id]) delete f[id];
+        await saveSettings({ jupyterHubs: m, jupyterCourseFolders: f, jupyterUrl: s.jupyterUrl === hub ? "" : s.jupyterUrl });
+        delete state.jup[hub]; rerender();
+      } }, "Disconnect")));
+  }
   const extra = h("input", { type: "url", placeholder: "Paste a course “git-pull” link", "aria-label": "Add a course link" });
-  box.append(h("div", { class: "row" }, h("div", { class: "grow" }, new URL(s.jupyterUrl).host, h("div", { class: "meta" }, "Notebooks appear on each course's Files page.")),
-      h("button", { class: "btn small secondary", onclick: async () => { await saveSettings({ jupyterUrl: "", jupyterCourseFolders: {} }); state.jup = { status: null, links: null, scan: null }; rerender(); } }, "Disconnect")),
+  box.append(
     toggle("Get the latest course files first", "Runs your classes' “Open in Jupyter” links before downloading or practicing. Your own edits are kept.", s.jupyterPullFirst !== false, (v) => saveSettings({ jupyterPullFirst: v })),
     h("div", { class: "row" }, h("div", { class: "grow" }, extra), h("button", { class: "btn small secondary", onclick: async () => {
       const url = extra.value.trim();
-      if (!/git-pull/.test(url) || new URL(url).host !== new URL(s.jupyterUrl).host) return toast("That isn't a git-pull link for your hub.", { error: true });
-      await saveSettings({ jupyterPullLinks: [...new Set([...(s.jupyterPullLinks || []), url])] }); state.jup.links = null; extra.value = ""; toast("Link added");
+      let ok = false; try { ok = /git-pull/.test(url) && hubs.some((x) => new URL(url).host === new URL(x).host); } catch { /* not a URL */ }
+      if (!ok) return toast("That isn't a git-pull link for one of your hubs.", { error: true });
+      await saveSettings({ jupyterPullLinks: [...new Set([...(s.jupyterPullLinks || []), url])] }); for (const k in state.jup) state.jup[k].links = null; extra.value = ""; toast("Link added");
     } }, "Add")),
-    (s.jupyterPullLinks || []).length ? h("div", { class: "hint" }, `${plural(s.jupyterPullLinks.length, "link")} you added`) : null);
+    ...((s.jupyterPullLinks || []).length ? [h("div", { class: "hint" }, `${plural(s.jupyterPullLinks.length, "link")} you added`)] : []));
   return box;
 }
 

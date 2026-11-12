@@ -18,7 +18,7 @@ views.practice = async (root) => {
     root.append(h("div", { class: "card" }, h("h3", {}, "Start your question bank"),
       h("ol", { class: "steps-list" },
         h("li", {}, "Open a course and pick a lecture."),
-        h("li", {}, "Choose Make a quiz. Your AI writes it; copy the reply and come back."),
+        h("li", {}, "Build its checklist, then make Part 1. Your AI writes the questions; StudyPilot picks up the reply."),
         h("li", {}, "Practice here. StudyPilot tracks what you know and brings questions back right before you'd forget them.")),
       h("button", { class: "btn block", onclick: () => openCourse(null) }, "Go to my courses")));
     root.append(pasteCard(snap));
@@ -51,7 +51,8 @@ views.practice = async (root) => {
 
   // Exam prep
   state.allExams = await send("ALL_EXAMS").catch(() => []);
-  root.append(examCard(all, snap));
+  const cq = await (await import("../coursequiz.js")).courseQuizCard(all, snap);
+  if (cq) root.append(cq);
 
   // Weak topics
   const weak = weakTopics(all).slice(0, 6);
@@ -85,31 +86,6 @@ views.practice = async (root) => {
   root.append(pasteCard(snap));
 };
 
-function examCard(all, snap) {
-  const courses = [...new Set(all.map((q) => q.courseId))];
-  state.exam ??= { courseId: courses[0], modules: null, count: 20, timed: true };
-  const E = state.exam;
-  if (!courses.includes(E.courseId)) E.courseId = courses[0];
-  const qs = all.filter((q) => q.courseId === E.courseId && q.type !== "card");
-  const mods = [...new Set(qs.map((q) => q.module || q.lectureTitle || "Other"))];
-  E.modules ??= new Set(mods);
-  const picked = qs.filter((q) => E.modules.has(q.module || q.lectureTitle || "Other"));
-  const next = (state.allExams || []).find((e) => e.courseId === E.courseId);
-  const days = next ? Math.round((new Date(new Date(next.date).toDateString()) - new Date(new Date().toDateString())) / 864e5) : null;
-  return h("div", { class: "card" }, h("h3", {}, "Exam prep"),
-    h("p", { class: "muted", style: "margin-top:0" }, next ? `${next.title} is ${days === 0 ? "today" : days === 1 ? "tomorrow" : `in ${days} days`}. A mixed set across the units you choose, with answers at the end.` : "A mixed set across the units you choose, with answers at the end."),
-    courses.length > 1 ? h("select", { "aria-label": "Course", onchange: (e) => { E.courseId = Number(e.target.value); E.modules = null; rerender(); } },
-      courses.map((id) => h("option", { value: id, selected: id === E.courseId }, courseName(id)))) : null,
-    mods.length > 1 ? h("details", { class: "adv" }, h("summary", {}, `Units: ${E.modules.size === mods.length ? "all" : `${E.modules.size} of ${mods.length}`}`),
-      h("div", { class: "checks" }, mods.map((m) => h("label", {},
-        h("input", { type: "checkbox", checked: E.modules.has(m), onchange: (e) => { e.target.checked ? E.modules.add(m) : E.modules.delete(m); rerender(); } }),
-        h("span", { class: "grow" }, m), h("small", {}, String(qs.filter((q) => (q.module || q.lectureTitle || "Other") === m).length)))))) : null,
-    h("div", { class: "field" }, "Questions"),
-    seg([[10, "10"], [20, "20"], [30, "30"], [50, "50"]], E.count, (v) => { E.count = v; rerender(); }, "Number of questions"),
-    toggle("Timed", "About 1.5 minutes per question", E.timed, (v) => { E.timed = v; }),
-    h("button", { class: "btn block", disabled: picked.length < 3, onclick: () => startSession(buildSession(picked, { mode: "exam", count: E.count }), { mode: "exam", title: `${courseName(E.courseId)} exam prep`, timed: E.timed }) },
-      picked.length < 3 ? "Need at least 3 questions" : `Start exam (${Math.min(E.count, picked.length)} questions)`));
-}
 
 // For questions you asked an AI yourself (on your phone, in another chat).
 function pasteCard(snap) {

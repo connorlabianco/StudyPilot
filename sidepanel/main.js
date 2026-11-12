@@ -54,6 +54,11 @@ async function handleQueued(q) {
   lastQueued = q.at;
   await chrome.storage.session.remove("queuedLecture");
   if (Date.now() - q.at > 60e3) return;
+  // From the My week page: find class times with the student's AI.
+  if (q.action === "classTimes") {
+    try { await (await import("./queue.js")).aiAction({ kind: "classTimes", courseIds: q.courseIds }); } catch (e) { toast(e.message, { error: true, ms: 8000 }); }
+    return;
+  }
   openCourse(q.courseId, "lectures");
   try {
     const all = await lecturesFor(q.courseId).catch(() => []);
@@ -77,10 +82,15 @@ document.querySelectorAll("[data-icon]").forEach((el) => el.replaceChildren(icon
   ({ snapshot: state.snapshot = null } = await chrome.storage.local.get("snapshot"));
   state.gcal = await send("GCAL_STATUS").catch(() => ({ connected: false }));
   await restorePending();
+  await import("./queue.js").then((q) => q.restoreRun()).catch(() => {});
   state.sync = await send("SYNC_STATUS").catch(() => ({}));
   go("today");
   syncAfter(500);
   // Look for exam dates in courses not checked recently (quietly; Today updates when done).
+  // New lectures in courses where the student uses lecture mastery join the AI list (checked a few times a day).
+  if (state.snapshot) setTimeout(() => import("./queue.js").then((q) => q.checkNewLectures()).catch(() => {}), 4000);
+  // A plan that's a week old, or missing new assignments, gets a fresh look from the AI (put in the AI list).
+  if (state.snapshot) setTimeout(() => import("./plan.js").then((m) => m.checkPlan()).catch(() => {}), 6000);
   if (state.snapshot) send("EXAMS_STALE").then((r) => { if (r?.checked && state.tab === "today" && $("#runner").hidden) rerender(); }).catch(() => {});
   const { queuedLecture, progress } = await chrome.storage.session.get(["queuedLecture", "progress"]);
   if (progress) showProgress(progress);

@@ -8,6 +8,7 @@ import { notebooksPack } from "../lib/jupyter.js";
 import { allQuestions, buildSession, addQuestions, autoCards, mastery, isDue, isMistake, allQuizzes, quizzesFor, bestPct, deleteQuiz } from "../lib/quiz.js";
 import { icon } from "../lib/icons.js";
 import { coverage, sameTopic, levelOf, levelClass } from "../lib/topics.js";
+import { masteryCapable, masterySection, multiSection } from "./mastery.js";
 
 export async function bank() {
   if (!state.bank) state.bank = await allQuestions().catch(() => []);
@@ -136,18 +137,23 @@ async function studyGuide(scope, mode = "review", { attach = false } = {}) {
   rerender();
 }
 
-// Flashcards with no AI: definitions pulled from the lecture text, plus any questions already in the bank.
+// Flashcards: the lecture's key terms, written by your AI as part of the checklist (never guessed from the text).
 async function flashcards(scope) {
-  let list = await scopeQuestions(scope);
-  if (scope.lectures?.length) {
-    const docs = await send("LIBRARY_ENSURE", { courseId: scope.courseId, lectures: scope.lectures.slice(0, 20) });
-    const cards = docs.flatMap((d, i) => d.error ? [] : autoCards(d.kind === "page" ? d.text : d.analysis?.text, { courseId: scope.courseId, lecture: scope.lectures[i] }));
-    const added = await addQuestions(cards);
-    if (added) { state.bank = null; list = await scopeQuestions(scope); }
+  const { termCards, getTerms } = await import("./mastery.js");
+  const { cards, withChecklist, withTerms } = await termCards(scope);
+  if (!cards.length) {
+    if (scope.kind === "lecture" && withChecklist && !withTerms) {
+      if (confirm("This lecture's checklist was made before key terms were included. Ask your AI for its key terms now (one short message)?"))
+        return (await import("./queue.js")).aiAction({ kind: "terms", courseId: scope.courseId, course: scope.title, lecture: scope.lectures[0] });
+      return;
+    }
+    return toast(scope.kind === "lecture" ? "Flashcards are this lecture's key terms, which come with its checklist. Build the checklist first (Lecture mastery, above)." : "Flashcards are the key terms from your lecture checklists. Build a checklist for some of these lectures first.", { ms: 8000 });
   }
-  const session = buildSession(list, { mode: "cards", count: 30 });
-  if (!session.length) return toast("No flashcards found in this material yet. Get practice questions from your AI; they work as flashcards too.", { ms: 7000 });
-  startSession(session, { mode: "cards", title: scope.title });
+  await addQuestions(cards); // keeps progress on cards you've seen
+  state.bank = null;
+  const ids = new Set(cards.map((c) => c.id));
+  const list = (await allQuestions(scope.courseId)).filter((q) => ids.has(q.id));
+  startSession(buildSession(list, { mode: "cards", count: 40 }), { mode: "cards", title: `${scope.title}: key terms` });
 }
 
 async function downloadScope(scope) {
@@ -174,7 +180,7 @@ async function downloadScope(scope) {
 
 // ---------- notebooks ----------
 async function readNotebooks(scope) {
-  const res = await send("JUPYTER_READ", { files: scope.notebooks.slice(0, 60), onlyNew: false });
+  const res = await send("JUPYTER_READ", { hub: scope.hub, files: scope.notebooks.slice(0, 60), onlyNew: false });
   const docs = res.docs.filter((d) => d.text);
   if (!docs.length) throw new Error("Couldn't read those notebooks. Save them in Jupyter and try again.");
   return docs;
@@ -187,7 +193,7 @@ async function getNotebookQuestions(scope) {
 async function notebookGuide(scope) {
   const docs = await readNotebooks(scope);
   const images = docs.flatMap((d) => d.images || []);
-  const text = notebooksPack(docs, { goal: "study", hub: state.settings.jupyterUrl ? new URL(state.settings.jupyterUrl).host : "", figures: images.length });
+  const text = notebooksPack(docs, { goal: "study", hub: scope.hub ? new URL(scope.hub).host : "", figures: images.length });
   const files = images.slice(0, 20).map((im) => {
     const bytes = im.base64 ? Uint8Array.from(atob(im.data), (c) => c.charCodeAt(0)) : new TextEncoder().encode(im.data);
     return { name: im.name, size: bytes.length, url: URL.createObjectURL(new Blob([bytes], { type: im.mime })) };
@@ -198,6 +204,7 @@ async function notebookGuide(scope) {
 // ---------- the sheet ----------
 export async function openSheet(scope) {
   const dlg = $("#sheet");
+  state.sheetScope = scope;
   const list = await scopeQuestions(scope);
   const st = scopeStats(list);
   const quizzes = await quizzesForScope(scope);
@@ -224,24 +231,32 @@ export async function openSheet(scope) {
     cov.missing.length ? tile("spark", `Quiz me on ${cov.missing.length === 1 ? "the missing topic" : `the ${cov.missing.length} missing topics`}`, cov.missing.slice(0, 3).join(", ") + (cov.missing.length > 3 ? "…" : ""), () => getQuestions(scope, { focus: cov.missing })) : null,
     weakT.length ? tile("target", "Practice weak topics", weakT.slice(0, 3).join(", ") + (weakT.length > 3 ? "…" : ""), () => views.startScope({ kind: "topics", courseId: scope.courseId, topics: weakT, title: `${scope.title}: weak topics` }, "weak")) : null) : null;
 
+  // Lectures use the mastery system (checklist → parts → assessments); older quick quizzes stay available below.
+  const mastery = masteryCapable(scope);
+  const masterySec = mastery ? await masterySection(scope, { tile, run }) : (scope.kind === "module" || scope.kind === "course") ? await multiSection(scope, { tile, run }) : null;
+  // Lectures: mastery replaces the old quick quizzes (any old questions stay in the Practice tab).
+  const legacyQuick = mastery;
   dlg.replaceChildren(h("div", { class: "sheet-in" },
     h("div", { class: "sheet-head" },
       h("div", { class: "grow" }, h("b", {}, scope.title), h("div", { class: "meta" }, [courseName(scope.courseId), scope.kind === "module" ? plural(scope.lectures.length, "lecture") : null].filter(Boolean).join(" · "))),
       h("button", { class: "ghost", "aria-label": "Close", onclick: closeSheet }, icon("close", 18))),
-    h("div", { class: "sheet-sec" }, h("div", { class: "sheet-label" }, "Quizzes", h("span", {}, prog)),
+    masterySec,
+    legacyQuick ? null : h(mastery ? "details" : "div", { class: "sheet-sec" + (mastery ? " quick" : "") }, mastery ? h("summary", { class: "sheet-label" }, "Quick practice", h("span", {}, prog)) : h("div", { class: "sheet-label" }, "Quizzes", h("span", {}, prog)),
       quizzes.length ? h("div", { class: "quiz-list" }, quizzes.slice(0, 6).map((z) => quizRow(z, { showScope: scope.kind !== "lecture" && z.scopeTitle !== scope.title, onDelete: async () => {
         if (!confirm(`Delete ${z.name}? Its questions stay in your bank for review.`)) return;
         await deleteQuiz(z.id); openSheet(scope);
       } })), quizzes.length > 6 ? h("div", { class: "hint" }, `+${quizzes.length - 6} older quizzes in Practice`) : null) : null,
-      tile("spark", quizzes.length ? "New quiz" : "Make a quiz", `${aiName} writes ${state.settings.quizCount || 10} questions; you take it here`, () => getQuestions(scope), { primary: !quizzes.length }),
+      mastery ? null : (scope.kind === "module" || scope.kind === "course")
+        ? tile("spark", "Course quiz", "Pick lectures and how much each counts; questions come from your lecture mastery", () => import("./coursequiz.js").then((m) => m.openCourseQuiz(scope.courseId, { preselect: scope.lectures.map((l) => l.key) })))
+        : tile("spark", quizzes.length ? "New quiz" : "Make a quiz", `${aiName} writes ${state.settings.quizCount || 10} questions; you take it here`, () => getQuestions(scope), { primary: !quizzes.length }),
       st.total > (quizzes[0]?.questionIds.length || 0) ? tile("play", "Mixed practice", st.due ? `${st.due} due for review first, from all ${st.total} questions` : `From all ${st.total} questions, weakest first`, () => views.startScope(scope, "practice")) : null,
       st.mistakes ? tile("review", `My mistakes (${st.mistakes})`, "Questions you missed, until you get each right twice in a row", () => views.startScope(scope, "mistakes", { count: 20 })) : null,
       st.total >= 5 ? tile("timer", "Exam mode", "A timed mix with answers at the end", () => views.startScope(scope, "exam", { timed: true })) : null),
-    topicsSec,
+    mastery ? null : topicsSec,
     h("div", { class: "sheet-sec" }, h("div", { class: "sheet-label" }, "Study"),
-      !isNb ? tile("cards", "Flashcards", st.cards ? `${plural(st.cards, "card")} plus your questions` : "Key terms from the material, no AI needed", () => flashcards(scope)) : null,
-      tile("book", "Study guide", `A summary, key ideas and examples in ${aiName}`, () => studyGuide(scope, "review")),
-      !isNb ? tile("quiz", "Quiz me in the chat", `${aiName} asks one question at a time (not tracked here)`, () => studyGuide(scope, "quiz")) : null),
+      !isNb ? tile("cards", "Flashcards", "Key terms, from the lecture checklist", () => flashcards(scope)) : null,
+      tile("book", "Study guide", `A summary, key ideas and examples in ${aiName}`, () => mastery ? import("./mastery.js").then((m) => m.lectureChatAsk(scope, "guide")) : studyGuide(scope, "review")),
+      mastery ? tile("pen", "Ask about this lecture", `Opens a chat with ${aiName} that has this lecture, for questions in your own words`, () => import("./mastery.js").then((m) => m.lectureChatAsk(scope, "ask"))) : null),
     !isNb && scope.lectures?.some((l) => l.type === "File" || l.type === "Page") ? h("div", { class: "sheet-sec" }, h("div", { class: "sheet-label" }, "Files"),
       tile("download", "Download", "Slides and images as one zip in Downloads › StudyPilot", () => downloadScope(scope))) : null));
   if (!dlg.open) dlg.showModal();

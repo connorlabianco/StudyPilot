@@ -17,20 +17,21 @@
 <main>
 <p><a href="./">&larr; StudyPilot home</a></p>
 <h1>StudyPilot Privacy Policy</h1>
-<p class="meta">Last updated: November 8, 2026</p>
+<p class="meta">Last updated: November 12, 2026</p>
 
 <p>StudyPilot is a browser extension that helps students study from their own Canvas courses. This policy explains what it reads, where that information is kept, and what is shared. In short: <b>StudyPilot has no server. Your information stays in your browser and, if you sign in, in a private folder in your own Google Drive.</b></p>
 
 <h2>What StudyPilot reads</h2>
 <ul>
   <li><b>Canvas:</b> your courses, assignments, due dates, grades, modules, pages, files, announcements and your own submissions, read with your existing Canvas login. StudyPilot only reads; it never submits, posts or changes anything in Canvas. It never opens quizzes, tests or outside tools, and skips locked items.</li>
-  <li><b>Optional connections you turn on:</b> Gradescope (your own submissions and graded copies), your school's lecture video site (captions of recordings you can watch), JupyterHub (your notebooks), and a private calendar link (only busy times, not event names). Each is read with your own login on that site, only after you connect it.</li>
+  <li><b>Optional connections you turn on:</b> Gradescope (your own submissions and graded copies), your school's lecture video site (captions of recordings you can watch), JupyterHub (your notebooks, from the hub each course uses), and a private calendar link (only busy times, not event names). Each is read with your own login on that site, only after you connect it.</li>
   <li><b>The page you ask about:</b> when you choose "Explain this page", the text of the Canvas page you're on.</li>
+  <li><b>Your AI's chat tab (only on AI sites you allow):</b> after StudyPilot fills in a request, it reads back only its own reply block from that chat when the answer is finished, and checks whether a chat it used before still exists. It doesn't read your other chats or anything else on the AI's site.</li>
 </ul>
 
 <h2>Where your information is kept</h2>
 <ul>
-  <li><b>In your browser:</b> course data, lecture text, practice questions and progress, grade calculators and settings are stored locally by the extension.</li>
+  <li><b>In your browser:</b> course data, lecture text, lecture checklists, practice questions and progress, your weekly calendar (class times, your sections, study time), your study plan and time estimates, your list of requests for your AI, grade calculators and settings are stored locally by the extension.</li>
   <li><b>In your Google Drive (only if you sign in):</b> a copy of your StudyPilot data is saved in Drive's private app data folder, so it can sync between your computers. Only StudyPilot can open this folder, and it doesn't appear among your Drive files.</li>
   <li><b>Also only in your browser:</b> your search index, focus-timer history, change alerts and to-do marks. Search runs on your own computer; what you search for is never sent anywhere.</li>
   <li><b>Downloads:</b> files and backups you ask for are saved to your computer's Downloads folder.</li>
@@ -39,15 +40,24 @@
 <h2>Google user data</h2>
 <ul>
   <li><b>Google Drive (<code>drive.appdata</code>):</b> used only to store and read StudyPilot's own sync file in your private app data folder. StudyPilot cannot see your other Drive files.</li>
-  <li><b>Google Calendar (only if you turn it on):</b> used only to read your busy times to plan study sessions around them, and to add the study sessions and deadlines you choose to add. Events StudyPilot creates are labeled so they can be removed without touching your other events.</li>
+  <li><b>Google Calendar (<code>calendar.events</code>, only if you turn it on):</b> used only to add, update and remove StudyPilot's own events: the deadlines, class times and planned study time you choose to add. StudyPilot doesn't read your other events. Events it creates are labeled so they can be updated or removed without touching anything else in your calendar.</li>
   <li>StudyPilot's use and transfer of information received from Google APIs adheres to the <a href="https://developers.google.com/terms/api-services-user-data-policy">Google API Services User Data Policy</a>, including the Limited Use requirements. Google data is never sold, never used for advertising, never used to train AI models, and never transferred to anyone else.</li>
 </ul>
 
 <h2>What is shared</h2>
 <ul>
   <li><b>Nothing is sent to StudyPilot's developers.</b> There is no StudyPilot server, analytics or tracking.</li>
-  <li><b>Your AI assistant:</b> when you ask for a quiz, study guide or plan, StudyPilot prepares the request and opens the AI you chose (for example ChatGPT, Claude, Gemini or Copilot). The content is sent to that AI only when you send it there yourself. That service's own privacy policy applies to what you send it.</li>
+  <li><b>Your AI assistant:</b> when you ask for a lecture checklist, questions, a study guide, class times or a study plan, StudyPilot prepares the request and opens the AI you chose (for example ChatGPT, Claude, Gemini or Copilot). Nothing reaches that AI until you press Send there yourself. Depending on what you asked for, a request can include:
+    <ul>
+      <li>lecture files or their text, and your lecture checklists;</li>
+      <li>JupyterHub lecture notebooks (from folders you mark as lecture material): their cells and outputs, their plots as images, and a short description of each data file they use (column names and types, an estimated row count and the first few rows);</li>
+      <li>the parts of your syllabi and course pages that mention class days, times and places (to find class times);</li>
+      <li>assignment names, due dates, points, instructions and attached files (to estimate how long each takes; never quizzes or tests), plus, for JupyterHub homework, the notebook's question text and the same short data descriptions, never your own code or answers;</li>
+      <li>for a study plan: deadlines, grade weights, exam dates, how many checklist items you have left, your average time per practice question, the checklist items you miss most, the study time you marked, and any note you write.</li>
+    </ul>
+    Requests don't include your name, email address, student ID, Canvas login or course grades. A graded assignment is only included when you choose "Learn from lost points" on it. That service's own privacy policy applies to what you send it.</li>
   <li><b>Fonts:</b> StudyPilot's panel loads its typefaces from Google Fonts, which receives the standard information any web request includes (such as your IP address), but no StudyPilot data.</li>
+  <li><b>Calendar files:</b> "Download calendar" saves a calendar file to your computer; it goes nowhere else unless you import it into a calendar app yourself.</li>
   <li><b>Notifications</b> (only if you turn them on) are shown by Chrome on your computer.</li>
   <li>Information is not sold or shared with advertisers or data brokers.</li>
 </ul>
@@ -67,7 +77,7 @@
 <p>If this policy changes, the updated version will be posted on this page with a new date.</p>
 
 <h2>Contact</h2>
-<p>Questions: connoralabianco@gmail.com, or see the <a href="support.html">support page</a>.</p>
+<p>Questions: <a href="mailto:connoralabianco@gmail.com">connoralabianco@gmail.com</a>, or see the <a href="support.html">support page</a>.</p>
 </main>
 </body>
 </html>

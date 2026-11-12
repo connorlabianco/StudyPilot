@@ -94,7 +94,7 @@ export const state = {
   lectureCache: {}, lectureFilter: "new", libraryStats: null,
   pending: null, imported: null, handoff: null, planSessions: null, attachOffer: null,
   bank: null, // all questions (loaded lazily)
-  jup: { status: null, links: null, scan: null },
+  jup: {}, // per hub: { status, scan, links }
 };
 
 // ---------- small building blocks ----------
