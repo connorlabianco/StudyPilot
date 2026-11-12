@@ -42,6 +42,5 @@ No account, no API key, no server. See the [privacy policy](docs/privacy.html).
 | `vendor/` | Bundled libraries: [pdf.js](https://github.com/mozilla/pdf.js) and [KaTeX](https://github.com/KaTeX/KaTeX), both with their licenses |
 | `docs/` | The website, privacy policy and support page (GitHub Pages) |
 
-Version history is in [CHANGELOG.md](CHANGELOG.md). Google Calendar review steps are in [GOOGLE-CALENDAR-VERIFICATION.md](GOOGLE-CALENDAR-VERIFICATION.md).
 
 StudyPilot is an independent project and isn't affiliated with Instructure, Gradescope, Panopto or any AI provider.
