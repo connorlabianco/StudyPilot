@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
-  "name": "StudyPilot – study planner for Canvas LMS",
-  "version": "5.6.7",
+  "name": "StudyPilot \u2013 study planner for Canvas LMS",
+  "version": "5.13.0",
   "description": "A friendlier Canvas: course pages, in-app practice quizzes, grade calculator, plans and study packs for any AI.",
   "permissions": [
     "storage",
@@ -88,6 +88,18 @@
         "content/speed.js"
       ],
       "all_frames": true,
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "https://*.instructure.com/calendar*"
+      ],
+      "js": [
+        "content/calendar.js"
+      ],
+      "css": [
+        "content/calendar.css"
+      ],
       "run_at": "document_idle"
     }
   ],

@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>My week · StudyPilot</title>
+<link rel="icon" href="../icons/icon32.png">
+<link rel="stylesheet" href="week.css">
+</head>
+<body>
+<header class="top">
+  <img src="../icons/icon32.png" alt="" width="26" height="26">
+  <h1>My week</h1>
+  <nav class="weeknav" aria-label="Week">
+    <button id="prev" class="btn ghost" aria-label="Previous week">&larr;</button>
+    <button id="today" class="btn ghost">This week</button>
+    <button id="next" class="btn ghost" aria-label="Next week">&rarr;</button>
+    <span id="range" aria-live="polite"></span>
+  </nav>
+  <span class="grow"></span>
+  <label class="switch"><input type="checkbox" id="office"> <span>Show office hours</span></label>
+  <button id="ics" class="btn soft">Download calendar</button>
+</header>
+<div class="paintbar" role="group" aria-label="Study time">
+  <b>Study time:</b>
+  <span class="seg" role="radiogroup" aria-label="Changes apply to">
+    <button id="mode-week" role="radio" aria-checked="true">Every week</button>
+    <button id="mode-once" role="radio" aria-checked="false">Only this week</button>
+  </span>
+  <span class="muted">Drag on an empty time to add study time. Drag over study time to remove it.</span>
+</div>
+<div class="layout">
+  <main id="grid" aria-label="Week calendar"></main>
+  <aside id="side" aria-label="Courses and class times"></aside>
+</div>
+<div id="pop" class="pop" role="dialog" aria-modal="false" hidden></div>
+<div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+<script type="module" src="week.js"></script>
+</body>
+</html>
